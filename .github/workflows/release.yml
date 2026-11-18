@@ -1,0 +1,134 @@
+name: Release Android App
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish signed APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read release version
+        id: version
+        run: |
+          set -euo pipefail
+          version=$(sed -n 's/^versionName=//p' release.properties | tr -d '\r')
+          code=$(sed -n 's/^versionCode=//p' release.properties | tr -d '\r')
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ &&
+                  "$code" =~ ^[1-9][0-9]{0,9}$ ]] || (( code > 2100000000 )); then
+            echo "::error::release.properties 中的 versionName 或 versionCode 无效"
+            exit 1
+          fi
+          tag="v$version"
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "$tag" ]]; then
+            echo "::error::tag 必须与 release.properties 中的版本一致"
+            exit 1
+          fi
+          if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch && "$GITHUB_REF" != refs/heads/main ]]; then
+            echo "::error::手动发布应从 main 分支运行"
+            exit 1
+          fi
+          printf 'name=%s\ncode=%s\ntag=%s\n' "$version" "$code" "$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Restore release signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$KEYSTORE_BASE64" || -z "$KEYSTORE_PASSWORD" || -z "$KEY_ALIAS" || -z "$KEY_PASSWORD" ]]; then
+            echo "::error::请在仓库的 Actions Secrets 中配置 Android 正式签名密钥和密码"
+            exit 1
+          fi
+          umask 077
+          mkdir -p .signing
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > .signing/nbtca-md3-release.jks
+          python3 - <<'PY'
+          import os
+          from pathlib import Path
+
+          def property_value(value):
+              # Java Properties.load reads ISO-8859-1 and accepts UTF-16 escapes.
+              units = value.encode("utf-16-be")
+              return "".join("\\u" + units[i:i + 2].hex() for i in range(0, len(units), 2))
+
+          fields = {
+              "storeFile": ".signing/nbtca-md3-release.jks",
+              "storePassword": os.environ["KEYSTORE_PASSWORD"],
+              "keyAlias": os.environ["KEY_ALIAS"],
+              "keyPassword": os.environ["KEY_PASSWORD"],
+          }
+          Path("key.properties").write_text(
+              "".join(f"{key}={property_value(value)}\n" for key, value in fields.items()),
+              encoding="ascii",
+          )
+          PY
+
+      - name: Test and build release APK
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          VERSION_CODE: ${{ steps.version.outputs.code }}
+        run: |
+          ./gradlew :app:testDebugUnitTest :app:assembleRelease \
+            -PversionName="$VERSION_NAME" -PversionCode="$VERSION_CODE" --stacktrace
+
+      - name: Verify release APK
+        id: artifact
+        env:
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+        run: |
+          set -euo pipefail
+          apk=app/build/outputs/apk/release/app-release.apk
+          certificate=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk")
+          if [[ "$certificate" == *"CN=Android Debug"* ]]; then
+            echo "::error::发布 APK 需要使用正式签名密钥"
+            exit 1
+          fi
+          printf '%s\n' "$certificate"
+          asset="$RUNNER_TEMP/nbtca-app-with-md3-$VERSION_NAME.apk"
+          cp "$apk" "$asset"
+          printf 'path=%s\n' "$asset" >> "$GITHUB_OUTPUT"
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION_NAME: ${{ steps.version.outputs.name }}
+          APK: ${{ steps.artifact.outputs.path }}
+        run: |
+          set -euo pipefail
+          commit=$(git rev-parse HEAD)
+          refs=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          if [[ -z "$refs" ]]; then
+            git push origin "$commit:refs/tags/$TAG"
+          elif [[ $(awk '$2 ~ /\^\{\}$/ { peeled = $1 } NR == 1 { direct = $1 }
+                       END { print peeled ? peeled : direct }' <<< "$refs") != "$commit" ]]; then
+            echo "::error::已有 tag 指向另一个提交，请使用新的版本号"
+            exit 1
+          fi
+          flags=()
+          if [[ "$VERSION_NAME" == *-* ]]; then
+            flags+=(--prerelease)
+          fi
+          gh release create "$TAG" "$APK" --verify-tag \
+            --title "拔电关机 MD3 $TAG" --generate-notes "${flags[@]}"

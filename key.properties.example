@@ -1,0 +1,4 @@
+storePassword=change-me
+keyPassword=change-me
+keyAlias=nbtca-md3
+storeFile=.signing/nbtca-md3-release.jks

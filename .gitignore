@@ -1,0 +1,27 @@
+# Gradle / Android Studio
+.gradle/
+build/
+*/build/
+build-artifacts/
+*.iml
+.idea/
+local.properties
+.signing/
+key.properties
+*.jks
+*.keystore
+
+# OS & Editor
+.DS_Store
+Thumbs.db
+.vscode/
+*.code-workspace
+
+# Build / test artifacts & captures
+*.apk
+*.aab
+screenshot_*.png
+*.png.bak
+
+# 旧版 Flutter 客户端已从仓库移除，仅保留本地目录不再跟踪
+frontend/

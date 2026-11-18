@@ -1,0 +1,82 @@
+package space.nbtca.app
+
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
+import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import space.nbtca.app.core.auth.AuthManager
+import space.nbtca.app.core.config.AppSettings
+import space.nbtca.app.core.config.ThemeMode
+import space.nbtca.app.core.data.CalendarRepository
+import space.nbtca.app.core.data.CoverStore
+import space.nbtca.app.core.data.DiskCache
+import space.nbtca.app.core.data.NewsRepository
+import space.nbtca.app.core.data.StatusRepository
+import space.nbtca.app.core.network.ApiClient
+import space.nbtca.app.core.network.NbtcaHttp
+import space.nbtca.app.ui.navigation.MainScreen
+import space.nbtca.app.ui.theme.NbtcaTheme
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        enableEdgeToEdge()
+
+        val appSettings = AppSettings.getInstance(this)
+        val authManager = AuthManager.getInstance(this)
+        val http = NbtcaHttp.client(this)
+        val cache = DiskCache(this)
+        val coverStore = CoverStore(this)
+        val apiClient = ApiClient(
+            authManager = authManager,
+            newsRepository = NewsRepository(http, cache, coverStore),
+            calendarRepository = CalendarRepository(http, cache),
+            statusRepository = StatusRepository(http, cache)
+        )
+
+        setContent {
+            // 启动即恢复缓存会话：token 临期会静默刷新，避免每次打开都要重新登录。
+            LaunchedEffect(Unit) { authManager.bootstrap() }
+
+            val systemDark = isSystemInDarkTheme()
+            var appearance by remember { mutableStateOf(appSettings.appearance) }
+            val darkTheme = when (appearance.mode) {
+                ThemeMode.System -> systemDark
+                ThemeMode.Light -> false
+                ThemeMode.Dark -> true
+            }
+
+            SideEffect {
+                val transparent = android.graphics.Color.TRANSPARENT
+                val style = if (darkTheme) SystemBarStyle.dark(transparent)
+                else SystemBarStyle.light(transparent, transparent)
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            }
+
+            NbtcaTheme(darkTheme = darkTheme, appearance = appearance) {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    MainScreen(
+                        authManager = authManager,
+                        apiClient = apiClient,
+                        appearance = appearance,
+                        onAppearanceChange = { settings ->
+                            appearance = settings
+                            appSettings.appearance = settings
+                        }
+                    )
+                }
+            }
+        }
+    }
+}

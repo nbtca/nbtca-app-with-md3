@@ -1,0 +1,469 @@
+package space.nbtca.app.ui.screens
+
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Assessment
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.automirrored.filled.EventNote
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Groups
+import androidx.compose.material.icons.automirrored.filled.MenuBook
+import androidx.compose.material.icons.filled.MonitorHeart
+import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.launch
+import space.nbtca.app.core.model.ServiceComponent
+import space.nbtca.app.core.model.ServiceIncident
+import space.nbtca.app.core.model.ServiceStatus
+import space.nbtca.app.core.network.ApiClient
+import space.nbtca.app.core.util.formatEpochChina
+import space.nbtca.app.core.util.htmlUnescape
+import space.nbtca.app.ui.theme.AppColors
+import space.nbtca.app.ui.theme.AppThemeColors
+import space.nbtca.app.ui.components.OfflineBanner
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+fun ToolsScreen(apiClient: ApiClient, academicStore: space.nbtca.app.core.academic.AcademicStore) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    val colors = MaterialTheme.colorScheme
+
+    var status by remember { mutableStateOf<ServiceStatus?>(null) }
+    var isLoading by remember { mutableStateOf(false) }
+    var showCalendar by remember { mutableStateOf(false) }
+    var monitorExpanded by remember { mutableStateOf(false) }
+    var academicPage by remember { mutableStateOf<String?>(null) }
+
+    fun load() {
+        if (isLoading) return
+        isLoading = true
+        scope.launch {
+            try {
+                status = apiClient.getServiceStatus()
+            } finally {
+                isLoading = false
+            }
+        }
+    }
+
+    LaunchedEffect(Unit) { load() }
+
+    if (showCalendar) {
+        AssociationCalendarScreen(
+            calendar = null,
+            apiClient = apiClient,
+            onBack = { showCalendar = false }
+        )
+        return
+    }
+
+    when (academicPage) {
+        "timetable" -> {
+            TimetableScreen(apiClient, academicStore, onBack = { academicPage = null })
+            return
+        }
+        "exams" -> {
+            ExamsScreen(academicStore, onBack = { academicPage = null })
+            return
+        }
+        "grades" -> {
+            GradesScreen(academicStore, onBack = { academicPage = null })
+            return
+        }
+    }
+
+    Scaffold(
+        containerColor = MaterialTheme.colorScheme.surface,
+        topBar = {
+            TopAppBar(
+                title = { Text("工具箱", style = MaterialTheme.typography.titleLargeEmphasized) },
+                actions = {
+                    IconButton(onClick = { load() }, enabled = !isLoading) {
+                        Icon(Icons.Default.Refresh, contentDescription = "刷新服务状态")
+                    }
+                },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = AppThemeColors.surface)
+            )
+        }
+    ) { padding ->
+        LazyColumn(
+            modifier = Modifier.fillMaxSize().padding(padding),
+            contentPadding = PaddingValues(top = 12.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (status?.isOffline == true) {
+                item {
+                    OfflineBanner(
+                        message = status?.message ?: "服务状态暂时不可用",
+                        modifier = Modifier.padding(horizontal = 16.dp)
+                    )
+                }
+            }
+
+            item {
+                Text(
+                    text = "协会",
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    style = MaterialTheme.typography.titleMediumEmphasized
+                )
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ToolEntry(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Default.Groups,
+                        iconBackground = colors.tertiaryContainer,
+                        iconColor = colors.onTertiaryContainer,
+                        title = "协会活动日历",
+                        subtitle = "查看近期活动"
+                    ) { showCalendar = true }
+                    ToolEntry(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.AutoMirrored.Filled.MenuBook,
+                        iconBackground = colors.secondaryContainer,
+                        iconColor = colors.onSecondaryContainer,
+                        title = "协会文档",
+                        subtitle = "docs.nbtca.space"
+                    ) { openUrl(context, "https://docs.nbtca.space") }
+                }
+            }
+
+            item {
+                Text(
+                    "教务",
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.titleMediumEmphasized
+                )
+            }
+
+            item {
+                Row(
+                    modifier = Modifier.padding(horizontal = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ToolEntry(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Default.CalendarMonth,
+                        iconBackground = colors.primaryContainer,
+                        iconColor = colors.onPrimaryContainer,
+                        title = "课表",
+                        subtitle = "课程安排"
+                    ) { academicPage = "timetable" }
+                    ToolEntry(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.AutoMirrored.Filled.EventNote,
+                        iconBackground = colors.primaryContainer,
+                        iconColor = colors.onPrimaryContainer,
+                        title = "考试",
+                        subtitle = "时间与考场"
+                    ) { academicPage = "exams" }
+                    ToolEntry(
+                        modifier = Modifier.weight(1f),
+                        icon = Icons.Default.Assessment,
+                        iconBackground = colors.primaryContainer,
+                        iconColor = colors.onPrimaryContainer,
+                        title = "成绩",
+                        subtitle = "成绩与绩点"
+                    ) { academicPage = "grades" }
+                }
+            }
+
+            item {
+                MonitorCard(
+                    status = status,
+                    isLoading = isLoading,
+                    expanded = monitorExpanded,
+                    onToggle = { monitorExpanded = !monitorExpanded }
+                )
+            }
+        }
+    }
+}
+
+/** 服务节点监测：折叠成单张卡片，展开后显示各节点与近期事件。 */
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
+@Composable
+private fun MonitorCard(
+    status: ServiceStatus?,
+    isLoading: Boolean,
+    expanded: Boolean,
+    onToggle: () -> Unit
+) {
+    val total = status?.totalComponents ?: 0
+    val healthy = status?.healthyComponents ?: 0
+    val stateColor = stateColor(status?.state ?: "unknown")
+    val updated = formatEpochChina(status?.updated ?: 0)
+    val arrowAngle by animateFloatAsState(
+        if (expanded) 180f else 0f,
+        animationSpec = MaterialTheme.motionScheme.fastSpatialSpec(),
+        label = "chevron"
+    )
+
+    Column(
+        modifier = Modifier
+            .padding(start = 16.dp, end = 16.dp, top = 10.dp)
+            .fillMaxWidth()
+            .clip(MaterialTheme.shapes.medium)
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .clickable { onToggle() }
+            .padding(14.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(stateColor.copy(alpha = 0.12f))
+                    .padding(8.dp)
+            ) {
+                Icon(Icons.Default.MonitorHeart, contentDescription = null, tint = stateColor, modifier = Modifier.size(22.dp))
+            }
+            Spacer(modifier = Modifier.width(10.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text("服务节点监测", fontSize = 14.sp, fontWeight = FontWeight.Bold, color = AppThemeColors.textPrimary)
+                Text(
+                    text = buildString {
+                        if (total > 0) append("$healthy / $total 正常")
+                        if (updated.isNotEmpty()) {
+                            if (isNotEmpty()) append(" · ")
+                            append("更新于 $updated")
+                        }
+                        if (isEmpty()) append(if (isLoading) "正在读取服务状态…" else status?.message ?: "暂无服务状态数据")
+                    },
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = AppThemeColors.textSecondary
+                )
+            }
+            if (isLoading) {
+                CircularProgressIndicator(
+                    modifier = Modifier.padding(end = 8.dp).size(16.dp),
+                    strokeWidth = 2.dp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+            Icon(
+                imageVector = Icons.Default.ExpandMore,
+                contentDescription = if (expanded) "收起" else "展开",
+                modifier = Modifier.size(22.dp).rotate(arrowAngle),
+                tint = AppThemeColors.textSecondary
+            )
+        }
+
+        AnimatedVisibility(visible = expanded) {
+            Column(modifier = Modifier.padding(top = 6.dp)) {
+                val groups = status?.groups.orEmpty()
+                groups.forEach { group ->
+                    Row(
+                        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .width(3.dp)
+                                .height(13.dp)
+                                .clip(RoundedCornerShape(2.dp))
+                                .background(if (group.infra) MaterialTheme.colorScheme.outline else MaterialTheme.colorScheme.primary)
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = htmlUnescape(group.name),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = AppThemeColors.textSecondary
+                        )
+                    }
+                    group.components.forEach { component ->
+                        ComponentRow(component)
+                    }
+                }
+
+                val incidents = status?.incidents.orEmpty()
+                if (incidents.isNotEmpty()) {
+                    Text(
+                        text = "近期事件",
+                        modifier = Modifier.padding(top = 10.dp, bottom = 2.dp),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = AppThemeColors.textSecondary
+                    )
+                    incidents.forEach { incident -> IncidentRow(incident) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComponentRow(component: ServiceComponent) {
+    val color = stateColor(component.state)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp),
+        verticalAlignment = Alignment.Top
+    ) {
+        Box(modifier = Modifier.padding(top = 5.dp).size(8.dp).clip(CircleShape).background(color))
+        Spacer(modifier = Modifier.width(10.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    text = htmlUnescape(component.name),
+                    modifier = Modifier.weight(1f),
+                    fontSize = 13.sp,
+                    color = AppThemeColors.textPrimary
+                )
+                Text(
+                    text = stateLabel(component.state),
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = color
+                )
+            }
+            if (component.failed.isNotEmpty()) {
+                Text(
+                    "异常区域：${component.failed.joinToString("、")}",
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    color = color
+                )
+            }
+            component.error?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    modifier = Modifier.padding(top = 2.dp),
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp,
+                    color = AppThemeColors.textSecondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun IncidentRow(incident: ServiceIncident) {
+    Column(modifier = Modifier.padding(vertical = 4.dp)) {
+        Text(
+            text = incident.title,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.SemiBold,
+            color = AppThemeColors.textPrimary
+        )
+        Text(
+            "影响级别：${incident.impact}",
+            fontSize = 11.sp,
+            color = AppThemeColors.textSecondary
+        )
+    }
+}
+
+@Composable
+private fun ToolEntry(
+    modifier: Modifier,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    iconBackground: Color,
+    iconColor: Color,
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    Card(
+        onClick = onClick,
+        modifier = modifier,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Box(
+                modifier = Modifier
+                    .clip(MaterialTheme.shapes.small)
+                    .background(iconBackground)
+                    .padding(8.dp)
+            ) {
+                Icon(icon, contentDescription = null, tint = iconColor)
+            }
+            Text(
+                text = title,
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                text = subtitle,
+                style = MaterialTheme.typography.bodySmall,
+                color = AppThemeColors.textSecondary
+            )
+        }
+    }
+}
+
+@Composable
+private fun stateColor(state: String): Color = when (state.lowercase()) {
+    "operational" -> AppColors.StatusCompleted
+    "degraded", "partial" -> AppColors.StatusPending
+    "major", "down", "offline" -> AppColors.StatusAlert
+    else -> MaterialTheme.colorScheme.onSurfaceVariant
+}
+
+private fun stateLabel(state: String): String = when (state.lowercase()) {
+    "operational" -> "正常"
+    "degraded" -> "降级"
+    "partial" -> "部分可用"
+    "major", "down" -> "故障"
+    "offline" -> "离线"
+    else -> "未知"
+}
+
+private fun overallTitle(status: ServiceStatus?): String = when (status?.state?.lowercase()) {
+    "operational" -> "所有核心服务正常运行"
+    "degraded", "partial" -> "服务部分降级"
+    "major", "down" -> "核心服务存在故障"
+    else -> if (status?.isOffline == true) "暂时无法获取服务状态" else "服务状态未知"
+}
