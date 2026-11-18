@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:fillColor="@color/launcher_badge"
+        android:strokeColor="@color/launcher_ring"
+        android:strokeWidth="4"
+        android:pathData="M54,23.5 A30.5,30.5 0,1 1,54,84.5 A30.5,30.5 0,1 1,54,23.5 Z" />
+</vector>

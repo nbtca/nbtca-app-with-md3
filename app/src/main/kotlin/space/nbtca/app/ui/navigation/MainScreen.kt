@@ -28,7 +28,6 @@ import androidx.compose.material.icons.outlined.Newspaper
 import androidx.compose.material.icons.outlined.Widgets
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationItemIconPosition
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ShortNavigationBar
 import androidx.compose.material3.ShortNavigationBarItem
@@ -85,8 +84,6 @@ fun MainScreen(
         Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal))
     ) {
         val useRail = maxWidth >= 840.dp
-        val iconPosition = if (maxWidth >= 600.dp) NavigationItemIconPosition.Start
-        else NavigationItemIconPosition.Top
 
         Row(Modifier.fillMaxSize()) {
             if (useRail) {
@@ -117,9 +114,15 @@ fun MainScreen(
                                 ShortNavigationBarItem(
                                     selected = selected,
                                     onClick = { index = position },
-                                    icon = { DestinationIcon(item, selected) },
-                                    label = { DestinationLabel(item, selected) },
-                                    iconPosition = iconPosition
+                                    icon = {
+                                        DestinationIcon(
+                                            item, selected,
+                                            contentDescription = item.label.takeUnless { selected }
+                                        )
+                                    },
+                                    label = if (selected) {
+                                        { DestinationLabel(item, selected = true) }
+                                    } else null
                                 )
                             }
                         }
@@ -155,8 +158,8 @@ fun MainScreen(
 }
 
 @Composable
-private fun DestinationIcon(item: Destination, selected: Boolean) {
-    Icon(if (selected) item.active else item.inactive, contentDescription = null)
+private fun DestinationIcon(item: Destination, selected: Boolean, contentDescription: String? = null) {
+    Icon(if (selected) item.active else item.inactive, contentDescription = contentDescription)
 }
 
 @Composable

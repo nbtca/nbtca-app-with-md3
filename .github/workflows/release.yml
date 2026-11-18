@@ -133,4 +133,4 @@ jobs:
             flags+=(--prerelease)
           fi
           gh release create "$TAG" "$APK" --verify-tag \
-            --title "拔电关机 MD3 $TAG" --generate-notes "${flags[@]}"
+            --title "拔电关机 $TAG" --generate-notes "${flags[@]}"

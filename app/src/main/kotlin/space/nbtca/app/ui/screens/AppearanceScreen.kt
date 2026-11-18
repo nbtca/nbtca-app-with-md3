@@ -115,6 +115,12 @@ internal fun AppearanceScreen(
             }
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppearanceHeading("桌面图标")
+                    LauncherIconPicker()
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppearanceHeading("主题配色")
                     PalettePicker(
                         selected = appearance.palette.takeUnless { dynamicColor },

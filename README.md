@@ -1,9 +1,10 @@
-# 拔电关机 MD3
+# 拔电关机
 
 基于 [NBTCA Android 客户端](https://github.com/nbtca/nbtca-app) 的原生界面改版，使用 **Kotlin + Jetpack Compose + Material 3 Expressive**。
 
-- 手机使用底部导航，宽屏切换为侧边导航栏。
+- 手机底部导航只为当前页面显示文字标签，宽屏切换为侧边导航栏。
 - 在「我的 → 外观」可即时预览并切换六套主题配色，显示模式可跟随系统或固定为浅色、深色。Android 12 及以上还可使用壁纸动态配色。
+- 在「我的 → 外观 → 桌面图标」可选择默认圆章图标或经典 NBTCA 会徽。
 - 应用 ID 为 `space.nbtca.app.md3`，可与官方包并存，两者各自保存登录和缓存。
 - 登录使用上游提供的 Logto、Card 授权页和教务会话，业务页面在 Compose 中呈现。
 - NBTCA 和 Card 登录页在支持 WebAuthn 的系统 WebView 中启用应用级通行密钥。认证域名 `auth.app.nbtca.space` 的 `/.well-known/assetlinks.json` 需用 `delegate_permission/common.handle_all_urls` 关联 `space.nbtca.app.md3` 和实际用于签名 APK 的证书 SHA-256 指纹。Logto 的「登录体验」还需启用密码钥匙登录。暂时无法用通行密钥时，可在登录页右上角查看其他验证方式。

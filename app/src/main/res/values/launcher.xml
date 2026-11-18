@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">拔电关机</string>
+    <color name="launcher_background">#3B4860</color>
+    <color name="launcher_ring">#82A9F6</color>
+    <color name="launcher_badge">#EDF3FF</color>
+    <color name="launcher_face">#1D3C65</color>
+</resources>
