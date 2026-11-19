@@ -1,7 +1,10 @@
 package space.nbtca.app.core.auth
 
 import android.content.Context
+import android.content.SharedPreferences
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -35,7 +38,7 @@ class AuthManager private constructor(context: Context) {
         .build()
 
     private val refreshMutex = kotlinx.coroutines.sync.Mutex()
-
+    private val sessionLock = Any()
 
     private val _state = MutableStateFlow(AuthState())
     val state: StateFlow<AuthState> = _state.asStateFlow()
@@ -45,6 +48,7 @@ class AuthManager private constructor(context: Context) {
     private var idToken: String? = null
     private var expiresAt: Long = 0L
     private var viewRole: String? = null
+    private var loginAttempt = 0L
 
     init {
         restore()
@@ -59,20 +63,23 @@ class AuthManager private constructor(context: Context) {
             ?: prefs.getString(KEY_ID, null)
         expiresAt = prefs.getLong(KEY_EXPIRES, 0L)
         viewRole = prefs.getString(KEY_VIEW_ROLE, null)
-        val cached = prefs.getString(KEY_PROFILE, null)
+        val legacyProfile = prefs.getString(KEY_PROFILE, null)
+        val cached = TokenCipher.decrypt(prefs.getString(KEY_ENCRYPTED_PROFILE, null)) ?: legacyProfile
         val profile = cached?.let { runCatching { json.decodeFromString<UserProfile>(it) }.getOrNull() }
-        if (profile != null && !accessToken.isNullOrEmpty()) {
+        if (profile != null && profile.sub.isNotBlank() && !accessToken.isNullOrEmpty()) {
             _state.value = AuthState(profile = profile, isLoggedIn = true, viewRole = viewRole)
+            if (legacyProfile != null) prefs.edit().putCachedProfile(profile).apply()
         }
     }
 
-    fun currentToken(): String? = accessToken
+    fun currentToken(): String? = synchronized(sessionLock) { accessToken }
 
     /** 业务请求前取有效 token，过期则自动 refresh。 */
     suspend fun getValidAccessToken(): String? {
-        val token = accessToken ?: return null
+        val (token, expiry) = synchronized(sessionLock) { accessToken to expiresAt }
+        if (token == null) return null
         if (token.startsWith("dev_") || token.startsWith("mock_")) return token
-        if (expiresAt == 0L || System.currentTimeMillis() < expiresAt - 60_000L) return token
+        if (expiry == 0L || System.currentTimeMillis() < expiry - 60_000L) return token
         return refresh()
     }
 
@@ -82,33 +89,35 @@ class AuthManager private constructor(context: Context) {
      */
     private suspend fun refresh(): String? = refreshMutex.withLock {
         // 拿到锁后先复查：可能已被其他请求刷新过。
-        val current = accessToken
-        if (!current.isNullOrEmpty() && System.currentTimeMillis() < expiresAt - 60_000L) {
+        val (current, rt, expiry) = synchronized(sessionLock) { Triple(accessToken, refreshToken, expiresAt) }
+        if (current == null) return@withLock null
+        if (System.currentTimeMillis() < expiry - 60_000L) {
             return@withLock current
         }
-        val rt = refreshToken
         if (rt.isNullOrEmpty()) {
-            logout()
-            return@withLock null
+            return@withLock current.takeIf { System.currentTimeMillis() < expiry }
         }
-        var resolved: String? = current
-        LogtoAuth.refreshToken(http, rt).fold(
-            onSuccess = { tokens ->
-                applyTokens(tokens, rt)
-                resolved = tokens.access_token
-            },
-            onFailure = { error ->
-                // 只有 Logto 明确拒绝（400 invalid_grant / 401）才判定登录失效；
-                // 断网、超时等一律保留缓存登录态，下次再试。
-                if (error is LogtoHttpError && (error.code == 400 || error.code == 401)) {
-                    logout()
-                    resolved = null
-                } else {
-                    resolved = current?.takeIf { System.currentTimeMillis() < expiresAt }
+        val result = LogtoAuth.refreshToken(http, rt)
+        synchronized(sessionLock) {
+            if (accessToken != current || refreshToken != rt) return@withLock null
+            result.fold(
+                onSuccess = { tokens ->
+                    applyTokens(tokens, rt)
+                    tokens.access_token
+                },
+                onFailure = { error ->
+                    if (error is CancellationException) throw error
+                    if (error is LogtoHttpError && (error.code == 401 ||
+                            (error.code == 400 && parseFlatObject(error.body)?.get("error") == "invalid_grant"))
+                    ) {
+                        logout()
+                        null
+                    } else {
+                        current.takeIf { System.currentTimeMillis() < expiry }
+                    }
                 }
-            }
-        )
-        resolved
+            )
+        }
     }
 
     /**
@@ -116,51 +125,64 @@ class AuthManager private constructor(context: Context) {
      * 全程不阻塞首屏，网络失败时保留本地缓存身份（不需要重新登录）。
      */
     suspend fun bootstrap() {
-        val token = accessToken ?: return
-        if (token.startsWith("dev_") || token.startsWith("mock_")) return
-        if (System.currentTimeMillis() >= expiresAt - 60_000L) {
-            refresh()
-        }
         validateStoredSession()
     }
 
-    private fun applyTokens(tokens: LogtoTokenSet, fallbackRefresh: String? = null) {
+    private fun applyTokens(tokens: LogtoTokenSet, fallbackRefresh: String? = null, profile: UserProfile? = null) {
         accessToken = tokens.access_token
-        refreshToken = tokens.refresh_token ?: fallbackRefresh ?: refreshToken
-        idToken = tokens.id_token ?: idToken
+        refreshToken = tokens.refresh_token ?: fallbackRefresh
+        idToken = tokens.id_token ?: idToken.takeIf { profile == null }
         expiresAt = System.currentTimeMillis() + tokens.expires_in.coerceAtLeast(60) * 1000L
-        prefs.edit()
+        val editor = prefs.edit()
             .putString(KEY_ACCESS, TokenCipher.encrypt(accessToken))
             .putString(KEY_REFRESH, TokenCipher.encrypt(refreshToken))
             .putString(KEY_ID, TokenCipher.encrypt(idToken))
             .putLong(KEY_EXPIRES, expiresAt)
-            .apply()
+        if (profile != null) {
+            viewRole = null
+            editor.remove(KEY_VIEW_ROLE).remove(KEY_PROFILE).remove(KEY_ENCRYPTED_PROFILE).putCachedProfile(profile)
+        }
+        editor.apply()
     }
 
     /** PKCE 换取 token 后建立登录态，并拉取 Logto + Saturday 身份。 */
     suspend fun loginWithTokens(tokens: LogtoTokenSet): Result<UserProfile> = withContext(Dispatchers.IO) {
-        _state.value = _state.value.copy(isAuthenticating = true)
+        val attempt = synchronized(sessionLock) {
+            _state.value = _state.value.copy(isAuthenticating = true)
+            ++loginAttempt
+        }
         try {
-            applyTokens(tokens)
             val profile = fetchProfile(tokens.access_token, tokens.id_token)
-            viewRole = null
-            prefs.edit()
-                .putString(KEY_PROFILE, json.encodeToString(UserProfile.serializer(), profile))
-                .remove(KEY_VIEW_ROLE)
-                .apply()
-            _state.value = AuthState(profile = profile, isLoggedIn = true, viewRole = null, isAuthenticating = false)
+            ensureActive()
+            synchronized(sessionLock) {
+                if (loginAttempt != attempt) throw CancellationException("登录已取消")
+                applyTokens(tokens, profile = profile)
+                _state.value = AuthState(profile = profile, isLoggedIn = true)
+            }
             Result.success(profile)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (e: Exception) {
-            clearLocal()
-            _state.value = AuthState()
             Result.failure(e)
+        } finally {
+            synchronized(sessionLock) {
+                if (loginAttempt == attempt) _state.value = _state.value.copy(isAuthenticating = false)
+            }
         }
     }
 
-    private fun fetchProfile(token: String, idTokenValue: String?): UserProfile {
+    private fun SharedPreferences.Editor.putCachedProfile(profile: UserProfile): SharedPreferences.Editor {
+        val encoded = json.encodeToString(UserProfile.serializer(), profile)
+        val encrypted = TokenCipher.encrypt(encoded) ?: return this
+        return putString(KEY_ENCRYPTED_PROFILE, encrypted).remove(KEY_PROFILE)
+    }
+
+    private fun fetchProfile(token: String, idTokenValue: String?, requireFresh: Boolean = false): UserProfile {
         val info = tryGetJson("${LogtoAuth.ENDPOINT}/oidc/me", token)
         val claims = LogtoAuth.parseJwtClaims(idTokenValue)
-        val member = tryGetJson("${SATURDAY_ENDPOINT}/member", token)
+        val member = tryGetJson("${SATURDAY_ENDPOINT}/member", token, allowMissingMember = true)
+        // 启动校验只用完整的联网结果替换已有资料，避免离线或单个服务故障清空字段。
+        check(!requireFresh || (info != null && member != null)) { "未能更新完整账号资料" }
 
         val merged = info ?: claims ?: member
             ?: throw IllegalStateException("无法验证登录身份，请检查网络后重试")
@@ -196,7 +218,7 @@ class AuthManager private constructor(context: Context) {
     private fun splitRoles(raw: String): List<String> =
         raw.split("|", ",").map { it.trim() }.filter { it.isNotEmpty() }
 
-    private fun tryGetJson(url: String, token: String): Map<String, String>? {
+    private fun tryGetJson(url: String, token: String, allowMissingMember: Boolean = false): Map<String, String>? {
         return try {
             val req = Request.Builder()
                 .url(url)
@@ -204,6 +226,7 @@ class AuthManager private constructor(context: Context) {
                 .addHeader("Accept", "application/json")
                 .build()
             http.newCall(req).execute().use { res ->
+                if (allowMissingMember && res.code in setOf(403, 404)) return emptyMap()
                 if (!res.isSuccessful) return null
                 parseFlatObject(res.body?.string().orEmpty())
             }
@@ -230,7 +253,7 @@ class AuthManager private constructor(context: Context) {
     }
 
     /** 只切换界面视角，不改账号与 token。 */
-    fun setViewRole(role: String?) {
+    fun setViewRole(role: String?) = synchronized(sessionLock) {
         val current = _state.value
         val profile = current.profile
         if (!current.isLoggedIn || profile == null) {
@@ -249,9 +272,12 @@ class AuthManager private constructor(context: Context) {
 
     /** 手动退出：清除本机保存的账号信息、令牌与头像缓存。 */
     fun logout() {
+        synchronized(sessionLock) {
+            loginAttempt++
+            clearLocal()
+            _state.value = AuthState()
+        }
         space.nbtca.app.core.card.CardImages.clear()
-        clearLocal()
-        _state.value = AuthState()
         runCatching {
             coil.Coil.imageLoader(appContext).apply {
                 memoryCache?.clear()
@@ -271,12 +297,21 @@ class AuthManager private constructor(context: Context) {
 
     /** 启动时静默校验；网络失败保留缓存身份，不强制退出。 */
     suspend fun validateStoredSession() {
-        val token = accessToken ?: return
+        val token = getValidAccessToken() ?: return
         if (token.startsWith("dev_") || token.startsWith("mock_")) return
+        val (storedIdToken, cached) = synchronized(sessionLock) {
+            if (accessToken != token) return
+            idToken to _state.value.profile
+        }
         try {
-            val profile = withContext(Dispatchers.IO) { fetchProfile(token, idToken) }
-            prefs.edit().putString(KEY_PROFILE, json.encodeToString(UserProfile.serializer(), profile)).apply()
-            _state.value = _state.value.copy(profile = profile, isLoggedIn = true)
+            val profile = withContext(Dispatchers.IO) { fetchProfile(token, storedIdToken, requireFresh = cached != null) }
+            synchronized(sessionLock) {
+                if (accessToken != token || (cached != null && profile.sub != cached.sub)) return
+                prefs.edit().putCachedProfile(profile).apply()
+                _state.value = _state.value.copy(profile = profile, isLoggedIn = true)
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
         } catch (_: Exception) {
             // 离线保留缓存身份。
         }
@@ -289,6 +324,7 @@ class AuthManager private constructor(context: Context) {
         private const val KEY_ID = "id_token"
         private const val KEY_EXPIRES = "expires_at"
         private const val KEY_PROFILE = "user_profile"
+        private const val KEY_ENCRYPTED_PROFILE = "user_profile_encrypted"
         private const val KEY_VIEW_ROLE = "view_role"
 
         @Volatile

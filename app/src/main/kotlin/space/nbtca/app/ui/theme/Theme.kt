@@ -11,8 +11,10 @@ import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import space.nbtca.app.core.config.AppearanceSettings
 
 val LocalIsDark = staticCompositionLocalOf { false }
@@ -29,6 +31,12 @@ fun NbtcaTheme(
 ) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
+    val systemDensity = LocalDensity.current
+    val fontMultiplier = appearance.fontSize.multiplier
+    val density = remember(systemDensity, fontMultiplier) {
+        if (fontMultiplier == 1f) systemDensity
+        else Density(systemDensity.density, systemDensity.fontScale * fontMultiplier)
+    }
     val colors = remember(context, configuration, darkTheme, appearance.dynamicColor, appearance.palette) {
         if (appearance.dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
@@ -36,7 +44,7 @@ fun NbtcaTheme(
             appearance.palette.colorScheme(darkTheme)
         }
     }
-    CompositionLocalProvider(LocalIsDark provides darkTheme) {
+    CompositionLocalProvider(LocalIsDark provides darkTheme, LocalDensity provides density) {
         MaterialExpressiveTheme(colorScheme = colors, content = content)
     }
 }

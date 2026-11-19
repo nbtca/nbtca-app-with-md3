@@ -34,7 +34,6 @@ object AcademicClient {
     private const val SSO_ENTRY = "/sso/jziotlogin"
     private const val JWXT_MENU = "/jwglxt/xtgl/index_initMenu.html"
     private const val TT_INDEX = "/jwglxt/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"
-    private const val TT_DATA = "/jwglxt/kbcx/xskbcx_cxXsgrkb.html"
     private const val EXAM_INDEX = "/jwglxt/kwgl/kscx_cxXsksxxIndex.html"
     private const val EXAM_CODE = "N358105"
     private const val GRADE_INDEX = "/jwglxt/cjcx/cjcx_cxDgXscj.html"
@@ -83,18 +82,15 @@ object AcademicClient {
         // 网页登录只完成到 webvpn；教务的 SSO 接力与数据请求都在后台用 Cookie 完成。
         runCatching { get(http, "$JWXT_BASE$SSO_ENTRY") }
         val menuHtml = runCatching { get(http, "$JWXT_BASE$JWXT_MENU") }.getOrNull().orEmpty()
-        if (store.studentId.isBlank()) {
-            extractStudentId(menuHtml)?.let { detected -> store.studentId = detected }
-        }
 
         val indexHtml = get(http, "$JWXT_BASE$TT_INDEX")
         if (looksLikeLoginPage(indexHtml)) {
             // 不要清空 Cookie：网页会话可能仍有效，只是 OkHttp 复放被判未登录。
             throw AcademicException("后台直连被教务判定未登录，请在「个人中心 → 教务系统账号」重新点一次教务网页登录")
         }
-        val snapshot = fetchAll(http, store, indexHtml)
+        val snapshot = fetchAll(http, indexHtml, extractStudentId(menuHtml))
         // 把 SSO 过程中新增的 Cookie 一并保存，下次直接复用。
-        store.cookies = jar.header()
+        store.saveSnapshot(snapshot, jar.header())
         return snapshot
     }
 
@@ -149,7 +145,7 @@ object AcademicClient {
             .readTimeout(30, TimeUnit.SECONDS)
             .build()
 
-    private fun fetchAll(http: OkHttpClient, store: AcademicStore, indexHtml: String): AcademicSnapshot {
+    private fun fetchAll(http: OkHttpClient, indexHtml: String, menuStudentId: String?): AcademicSnapshot {
         val years = parseSelect(indexHtml, "xnm")
         val semesters = parseSelect(indexHtml, "xqm")
         if (years.isEmpty() || semesters.isEmpty()) {
@@ -158,7 +154,12 @@ object AcademicClient {
         val year = years.firstOrNull { it.third } ?: years.first()
         val semester = semesters.firstOrNull { it.third } ?: semesters.first()
 
-        val timetableRaw = execute(http, timetableRequest(TT_DATA, year.first, semester.first))
+        val timetableRaw = execute(http, timetableRequest(AcademicWebSync.TIMETABLE_DATA_PATH, year.first, semester.first))
+        val timetable = runCatching { json.parseToJsonElement(timetableRaw) as? JsonObject }.getOrNull()
+        val identity = timetable?.get("xsxx") as? JsonObject
+        val studentId = listOf("xh", "XH").firstNotNullOfOrNull { key ->
+            (identity?.get(key) as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf { it.isNotEmpty() }
+        } ?: menuStudentId ?: throw AcademicException("未能确认当前教务学号，请重新登录")
         val periodResponse = runCatching {
             val periodClient = http.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
             execute(periodClient, timetableRequest(TIMETABLE_PERIODS_PATH, year.first, semester.first))
@@ -167,8 +168,8 @@ object AcademicClient {
         val exams = fetchRecords(http, EXAM_INDEX, EXAM_CODE, EXAM_INDEX, year.first, semester.first, "kssj", ::parseExam)
         val grades = fetchRecords(http, GRADE_INDEX, GRADE_CODE, GRADE_QUERY, year.first, semester.first, "kch", ::parseGrade)
 
-        val snapshot = AcademicSnapshot(
-            studentId = store.studentId,
+        return AcademicSnapshot(
+            studentId = studentId,
             termLabel = "${year.second} · ${semester.second}",
             timetable = parseTimetableRaw(timetableRaw),
             exams = exams,
@@ -177,8 +178,6 @@ object AcademicClient {
             timetablePeriods = metadata.periods,
             timetableDays = metadata.days
         )
-        store.saveSnapshot(snapshot)
-        return snapshot
     }
 
     // ---------------- 登录 ----------------

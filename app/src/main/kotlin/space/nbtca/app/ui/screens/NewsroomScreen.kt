@@ -15,21 +15,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Article
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LoadingIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MediumFlexibleTopAppBar
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -40,7 +37,6 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
@@ -55,8 +51,6 @@ import space.nbtca.app.ui.components.OfflineBanner
 fun NewsroomScreen(apiClient: ApiClient) {
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    val barState = rememberTopAppBarState()
-    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(barState)
     var feed by remember { mutableStateOf<NewsFeedResult?>(null) }
     var refreshing by remember { mutableStateOf(false) }
     var selectedCategory by rememberSaveable { mutableStateOf("全部") }
@@ -94,17 +88,13 @@ fun NewsroomScreen(apiClient: ApiClient) {
         .distinctBy { it.id }
 
     Scaffold(
-        modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            MediumFlexibleTopAppBar(
+            TopAppBar(
                 title = { Text("拔电关机") },
                 subtitle = { Text("To be at the intersection of technology and liberal arts.") },
-                actions = {
-                    IconButton(onClick = { scope.launch { load(force = true) } }, enabled = !refreshing) {
-                        Icon(Icons.Filled.Refresh, contentDescription = "刷新资讯")
-                    }
-                },
-                scrollBehavior = scrollBehavior
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surfaceContainer
+                )
             )
         }
     ) { padding ->

@@ -8,7 +8,10 @@ data class AcademicTerm(
     val semester: String = "",
     val yearLabel: String = "",
     val semesterLabel: String = ""
-)
+) {
+    val key: String get() = "$academicYear:$semester"
+    val label: String get() = "$yearLabel · $semesterLabel"
+}
 
 @Serializable
 data class TimetableCourse(
@@ -61,5 +64,12 @@ data class AcademicSnapshot(
     val grades: List<GradeItem> = emptyList(),
     val updatedAt: Long = 0L,
     val timetablePeriods: Map<Int, TimetablePeriod> = emptyMap(),
-    val timetableDays: List<TimetableDay> = emptyList()
-)
+    val timetableDays: List<TimetableDay> = emptyList(),
+    val term: AcademicTerm? = null
+) {
+    val termKey: String get() = term?.key ?: "legacy:$termLabel"
+
+    internal fun matchesTerm(other: AcademicSnapshot): Boolean =
+        if (term != null && other.term != null) term.key == other.term.key
+        else termLabel.trim() == other.termLabel.trim()
+}

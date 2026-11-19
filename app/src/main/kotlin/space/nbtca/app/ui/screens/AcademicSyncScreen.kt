@@ -12,8 +12,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.Row
@@ -45,31 +43,38 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import space.nbtca.app.core.academic.AcademicException
 import space.nbtca.app.core.academic.AcademicStore
+import space.nbtca.app.core.academic.AcademicTerm
 import space.nbtca.app.core.academic.AcademicWebSync
 import space.nbtca.app.core.academic.TermCatalog
 import space.nbtca.app.ui.theme.AppThemeColors
+import java.util.UUID
 import kotlin.coroutines.resume
 
 /**
  * 教务同步：登录与取数在同一个 WebView 内完成。
  * webvpn 会话绑在 WebView 上，另开隐藏 WebView 会丢会话，所以必须复用这一页。
  */
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun AcademicSyncScreen(
     store: AcademicStore,
     onBack: () -> Unit,
-    onSynced: () -> Unit
+    onSynced: (String?) -> Unit
 ) {
     var status by remember { mutableStateOf("正在连接 webvpn…") }
     var stage by remember { mutableStateOf(Stage.LOGIN) }
     var loading by remember { mutableStateOf(true) }
     var catalog by remember { mutableStateOf<TermCatalog?>(null) }
     var selectedYear by remember { mutableStateOf("") }
-    var selectedSemester by remember { mutableStateOf("") }
+    var selectedTerms by remember { mutableStateOf(emptySet<AcademicTerm>()) }
     var error by remember { mutableStateOf<String?>(null) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var ssoRetries by remember { mutableStateOf(0) }
@@ -177,6 +182,11 @@ fun AcademicSyncScreen(
                         webView = this
                         loadUrl("https://webvpn.nbt.edu.cn/")
                     }
+                },
+                onRelease = { view ->
+                    if (webView === view) webView = null
+                    view.stopLoading()
+                    view.destroy()
                 }
             )
 
@@ -228,8 +238,12 @@ fun AcademicSyncScreen(
                             .onSuccess { parsed ->
                                 catalog = parsed
                                 selectedYear = parsed.selectedYear
-                                selectedSemester = parsed.selectedSemester
-                                status = "请选择要查看的学期"
+                                if (selectedTerms.isEmpty()) {
+                                    val year = parsed.years.first { it.value == selectedYear }
+                                    val semester = parsed.semesters.first { it.value == parsed.selectedSemester }
+                                    selectedTerms = setOf(AcademicTerm(year.value, semester.value, year.label, semester.label))
+                                }
+                                status = "请选择要同步的学期"
                                 stage = Stage.PICK_TERM
                             }
                             .onFailure {
@@ -249,27 +263,34 @@ fun AcademicSyncScreen(
             }
             Stage.FETCHING -> {
                 if (view == null) return@LaunchedEffect
-                repeat(120) {
-                    delay(400)
-                    val raw = evaluateJsValue(
-                        view,
-                        "(window.__nbtSync || (function(){try{return localStorage.getItem('nbt_sync')}catch(e){return null}})())"
-                    )
-                    if (!raw.isNullOrBlank() && raw != "null") {
-                        val label = buildString {
-                            catalog?.years?.firstOrNull { it.value == selectedYear }?.label?.let { append(it) }
-                            catalog?.semesters?.firstOrNull { it.value == selectedSemester }?.label?.let {
-                                if (isNotEmpty()) append(" · ")
-                                append(it)
-                            }
+                val batch = selectedTerms.toList()
+                val failures = mutableListOf<Pair<String, String>>()
+                var batchStudentId: String? = null
+                for ((index, term) in batch.withIndex()) {
+                    status = "正在同步 ${index + 1}/${batch.size} · ${term.label}"
+                    try {
+                        val raw = fetchTerm(view, term)
+                        val snapshot = withContext(Dispatchers.IO) { AcademicWebSync.parse(raw, term) }
+                        if (batchStudentId != null && snapshot.studentId != batchStudentId) {
+                            throw AcademicException("教务账号在同步期间变更，请重新同步")
                         }
-                        runCatching { AcademicWebSync.parse(store, raw, label) }
-                            .onSuccess { onSynced() }
-                            .onFailure { error = "同步失败：${it.message}" }
-                        return@LaunchedEffect
+                        val cookies = AcademicWebSync.sessionCookies()
+                            ?: throw AcademicException("教务会话已失效，请重新登录")
+                        store.saveSnapshot(snapshot, cookies)
+                        batchStudentId = snapshot.studentId
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        failures += term.label to (failure.message ?: "无法读取教务数据")
                     }
                 }
-                if (error == null) error = "同步超时，请重试"
+                loading = false
+                if (failures.size == batch.size) {
+                    error = "同步失败：${failures.firstOrNull()?.second ?: "未选择学期"}"
+                } else {
+                    val failedLabels = failures.joinToString("、") { it.first }
+                    onSynced(failedLabels.takeIf { it.isNotEmpty() }?.let { "以下学期同步失败：$it" })
+                }
             }
             else -> Unit
         }
@@ -279,7 +300,7 @@ fun AcademicSyncScreen(
         if (stage == Stage.PICK_TERM) {
             AlertDialog(
                 onDismissRequest = { onBack() },
-                title = { Text("选择学期") },
+                title = { Text("选择同步学期") },
                 text = {
                     // 学年可能十几个，横排滚动；学期只有 1/2/3，单独一行，避免被挤出对话框
                     Column(
@@ -317,33 +338,37 @@ fun AcademicSyncScreen(
                             modifier = Modifier.padding(vertical = 4.dp),
                             horizontalArrangement = Arrangement.spacedBy(6.dp)
                         ) {
+                            val year = current.years.first { it.value == selectedYear }
                             current.semesters.forEach { option ->
+                                val term = AcademicTerm(year.value, option.value, year.label, option.label)
                                 FilterChip(
-                                    selected = option.value == selectedSemester,
-                                    onClick = { selectedSemester = option.value },
+                                    selected = term in selectedTerms,
+                                    onClick = {
+                                        selectedTerms = if (term in selectedTerms) selectedTerms - term else selectedTerms + term
+                                    },
                                     label = { Text(option.label, fontSize = 12.sp) }
                                 )
                             }
                         }
-                        Text(
-                            text = "${current.years.firstOrNull { it.value == selectedYear }?.label ?: "-"} · " +
-                                "${current.semesters.firstOrNull { it.value == selectedSemester }?.label ?: "-"}",
-                            modifier = Modifier.padding(top = 6.dp),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
+                        if (selectedTerms.isNotEmpty()) {
+                            Text(
+                                text = selectedTerms.joinToString("\n") { it.label },
+                                modifier = Modifier.padding(top = 6.dp),
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
                     }
                 },
                 confirmButton = {
-                    TextButton(onClick = {
-                        error = null
-                        status = "正在读取课表、考试与成绩…"
-                        stage = Stage.FETCHING
-                        webView?.evaluateJavascript(
-                            AcademicWebSync.dataScript(selectedYear, selectedSemester),
-                            null
-                        )
-                    }) { Text("确定") }
+                    TextButton(
+                        enabled = selectedTerms.isNotEmpty(),
+                        onClick = {
+                            error = null
+                            loading = true
+                            stage = Stage.FETCHING
+                        }
+                    ) { Text("同步 ${selectedTerms.size} 个学期") }
                 },
                 dismissButton = { TextButton(onClick = onBack) { Text("取消") } }
             )
@@ -354,10 +379,24 @@ fun AcademicSyncScreen(
 private enum class Stage { LOGIN, SSO, TERMS, PICK_TERM, FETCHING }
 
 private const val SSO_URL = "https://jwxt-443.webvpn.nbt.edu.cn/sso/jziotlogin"
-private const val TT_INDEX_URL =
-    "https://jwxt-443.webvpn.nbt.edu.cn/jwglxt/kbcx/xskbcx_cxXskbcxIndex.html?gnmkdm=N2151&layout=default"
 
-private suspend fun evaluateJsValue(view: WebView, script: String): String? =
+private suspend fun fetchTerm(view: WebView, term: AcademicTerm): String {
+    val requestId = UUID.randomUUID().toString()
+    return withTimeoutOrNull(48_000L) {
+        evaluateJsValue(view, AcademicWebSync.dataScript(term, requestId))
+        var result: String? = null
+        while (result == null) {
+            delay(400)
+            result = evaluateJsValue(
+                view,
+                "window.__nbtSync?.requestId === '$requestId' ? window.__nbtSync.result : null"
+            )?.takeUnless { it.isBlank() || it == "null" }
+        }
+        result
+    } ?: throw AcademicException("读取学期数据超时")
+}
+
+internal suspend fun evaluateJsValue(view: WebView, script: String): String? =
     suspendCancellableCoroutine { continuation ->
         try {
             view.evaluateJavascript(script) { value ->

@@ -3,9 +3,26 @@ package space.nbtca.app.core.academic
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
+import space.nbtca.app.core.parse.SchoolWeek
 import java.time.LocalDate
 
 class TimetableMetadataTest {
+    @Test
+    fun usesCalendarOfSelectedTermForLegacyAndCodedTerms() {
+        val calendar = SchoolWeek(termMondays = mapOf(
+            "2026-fall" to "2026-09-14",
+            "2026-spring" to "2027-03-01"
+        ))
+        val autumn = LocalDate.of(2026, 9, 14)
+        val spring = LocalDate.of(2027, 3, 1)
+        assertEquals(autumn, calendar.firstMonday("2026-2027 · 第一学期"))
+        assertEquals(autumn, calendar.firstMonday("2026-2027 · 3"))
+        assertEquals(spring, calendar.firstMonday("", "2026", "12"))
+        assertNull(calendar.firstMonday("", "2026", "16"))
+        assertEquals(10, timetableCurrentWeek(LocalDate.of(2026, 11, 19), autumn, 20))
+        assertNull(timetableCurrentWeek(LocalDate.of(2026, 11, 19), spring, 20))
+    }
+
     @Test
     fun parsesWeekDatesAndUsesUpdatedBellTimes() {
         val metadata = TimetableMetadata(

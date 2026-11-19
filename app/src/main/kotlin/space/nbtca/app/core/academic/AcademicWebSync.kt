@@ -1,5 +1,7 @@
 package space.nbtca.app.core.academic
 
+import android.webkit.CookieManager
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -24,6 +26,97 @@ data class TermCatalog(
  * 绕开"把浏览器 Cookie 搬到 OkHttp"被判未登录的问题。
  */
 object AcademicWebSync {
+
+    internal const val PORTAL_URL = "https://webvpn.nbt.edu.cn/"
+    internal const val AUTH_ORIGIN = "https://authserver-443.webvpn.nbt.edu.cn"
+    internal const val JWXT_ORIGIN = "https://jwxt-443.webvpn.nbt.edu.cn"
+    internal const val JWXT_SSO_URL = "$JWXT_ORIGIN/sso/jziotlogin"
+    internal const val JWXT_MENU_PATH = "/jwglxt/xtgl/index_initMenu.html"
+    internal const val JWXT_MENU_URL = "$JWXT_ORIGIN$JWXT_MENU_PATH"
+    internal const val TIMETABLE_PATH = "/jwglxt/kbcx/xskbcx_cxXskbcxIndex.html"
+    internal const val TIMETABLE_URL = "$JWXT_ORIGIN$TIMETABLE_PATH?gnmkdm=N2151&layout=default"
+    internal const val TIMETABLE_DATA_PATH = "/jwglxt/kbcx/xskbcx_cxXsgrkb.html"
+
+    internal val PORTAL_READY_SCRIPT = """
+        (() => location.origin === 'https://webvpn.nbt.edu.cn'
+          && (document.body?.innerText ?? '').includes('常用站点')
+          && !document.querySelector('#pwdEncryptSalt, input[type="password"]'))()
+    """.trimIndent()
+
+    private val timetableRequests = """
+        const enc = (values) => new URLSearchParams(values).toString();
+        const H = async (url, options) => {
+          const res = await fetch(url, Object.assign({ credentials: 'include', cache: 'no-store' }, options));
+          if (!res.ok) throw new Error('教务请求失败（HTTP ' + res.status + '）');
+          if (new URL(res.url).origin !== '$JWXT_ORIGIN') throw new Error('登录状态已失效，请重新登录');
+          return res;
+        };
+        const timetableRequest = (xnm, xqm) => ({
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
+          body: enc({ xnm, xqm })
+        });
+        const identifyStudent = async (timetable) => {
+          const data = JSON.parse(timetable);
+          const identity = data?.xsxx;
+          const studentId = [identity?.xh, identity?.XH]
+            .find(value => (typeof value === 'string' && value.trim()) || typeof value === 'number');
+          if (studentId != null) return String(studentId).trim();
+
+          // Some timetable responses only contain course rows. Check the authenticated menu for the ID.
+          const menu = await H('$JWXT_MENU_PATH');
+          const doc = new DOMParser().parseFromString(await menu.text(), 'text/html');
+          const alternate = doc.querySelector('input#xh_id, input[name="xh_id"]')?.value?.trim();
+          if (alternate && /^\d{6,}$/.test(alternate)
+              && !doc.querySelector('#pwdEncryptSalt, input[type="password"]')) return alternate;
+          throw new Error('未能确认当前教务学号，请重新登录');
+        };
+    """.trimIndent()
+
+    internal val TIMETABLE_IDENTITY_SCRIPT = """
+        (() => {
+          if (location.origin !== '$JWXT_ORIGIN' || location.pathname !== '$TIMETABLE_PATH'
+              || document.querySelector('#pwdEncryptSalt, input[type="password"]')) return null;
+          if (window.__nbtIdentityStarted) return window.__nbtStudentId ?? null;
+          const choice = (selector) => {
+            const select = document.querySelector(selector);
+            return select?.value || Array.from(select?.options ?? []).find(option => !option.disabled && option.value)?.value;
+          };
+          const year = choice('select#xnm, select[name="xnm"]');
+          const semester = choice('select#xqm, select[name="xqm"]');
+          if (!year || !semester) return null;
+
+          window.__nbtIdentityStarted = true;
+          $timetableRequests
+          H('$TIMETABLE_DATA_PATH', timetableRequest(year, semester))
+            .then(res => res.text())
+            .then(identifyStudent)
+            .then(studentId => { window.__nbtStudentId = studentId; })
+            .catch(() => { window.__nbtStudentId = ''; });
+          return null;
+        })()
+    """.trimIndent()
+
+    internal fun sessionCookies(): String? {
+        val manager = CookieManager.getInstance()
+        val timetableCookies = manager.getCookie(TIMETABLE_URL)?.takeIf { it.isNotBlank() } ?: return null
+        return listOf(manager.getCookie(AUTH_ORIGIN), manager.getCookie(PORTAL_URL), timetableCookies)
+            .filterNotNull()
+            .flatMap { it.split(';') }
+            .mapNotNull { cookie ->
+                val name = cookie.substringBefore('=').trim()
+                val value = cookie.substringAfter('=', "").trim()
+                if (name.isEmpty() || value.isEmpty()) null else name to value
+            }
+            .toMap()
+            .entries
+            .takeIf { it.isNotEmpty() }
+            ?.joinToString("; ") { (name, value) -> "$name=$value" }
+    }
+
+    internal fun decodeStudentId(result: String): String =
+        runCatching { json.parseToJsonElement(result).jsonPrimitive.contentOrNull.orEmpty().trim() }
+            .getOrDefault("")
 
     /** 读取可选学期列表。 */
     /** 读取可选学期列表：先看当前页面/子框架，再依次尝试多个课表入口 URL。 */
@@ -80,31 +173,25 @@ object AcademicWebSync {
     """.trimIndent()
 
     /** 指定学期的课表 / 考试 / 成绩。 */
-    fun dataScript(xnm: String, xqm: String): String = """
+    fun dataScript(term: AcademicTerm, requestId: String): String = """
         (function () {
-          const KEY = 'nbt_sync';
+          const requestId = ${json.encodeToString(requestId)};
+          window.__nbtSyncRequest = requestId;
           window.__nbtSync = null;
-          try { localStorage.removeItem(KEY); } catch (e) {}
-          const emit = (v) => { window.__nbtSync = v; try { localStorage.setItem(KEY, v); } catch (e) {} };
-          const enc = (o) => Object.keys(o).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(o[k])).join('&');
-          const H = async (u, o) => {
-            const res = await fetch(u, Object.assign({ credentials: 'include', cache: 'no-store' }, o || {}));
-            if (!res.ok) throw new Error('教务请求失败（HTTP ' + res.status + '）');
-            if (res.url.indexOf('authserver') >= 0) throw new Error('登录状态已失效，请重新登录');
-            return res;
+          const emit = (result) => {
+            if (window.__nbtSyncRequest === requestId) window.__nbtSync = { requestId, result };
           };
-          const XNM = '$xnm', XQM = '$xqm';
+          $timetableRequests
+          const XNM = ${json.encodeToString(term.academicYear)}, XQM = ${json.encodeToString(term.semester)};
           (async () => {
-            const timetableRequest = {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
-              body: enc({ xnm: XNM, xqm: XQM })
-            };
-            const ttRes = await H('/jwglxt/kbcx/xskbcx_cxXsgrkb.html', timetableRequest);
+            if (location.origin !== '$JWXT_ORIGIN') throw new Error('登录状态已失效，请重新登录');
+            const request = timetableRequest(XNM, XQM);
+            const ttRes = await H('$TIMETABLE_DATA_PATH', request);
             const tt = await ttRes.text();
+            const studentId = await identifyStudent(tt);
             const periodsAbort = new AbortController();
             const periodsTimeout = setTimeout(() => periodsAbort.abort(), 5000);
-            const periods = H('$TIMETABLE_PERIODS_PATH', Object.assign({}, timetableRequest, { signal: periodsAbort.signal }))
+            const periods = H('$TIMETABLE_PERIODS_PATH', Object.assign({}, request, { signal: periodsAbort.signal }))
               .then(res => res.text()).catch(() => null).finally(() => clearTimeout(periodsTimeout));
             const pages = async (path, code, sort) => {
               let out = [], page = 1, total = 1;
@@ -127,7 +214,7 @@ object AcademicWebSync {
             };
             const exams = await pages('/jwglxt/kwgl/kscx_cxXsksxxIndex.html', 'N358105', 'kssj');
             const grades = await pages('/jwglxt/cjcx/cjcx_cxXsgrcj.html', 'N305005', 'kch');
-            emit(JSON.stringify({ tt: tt, periods: await periods, exams: exams, grades: grades }));
+            emit(JSON.stringify({ studentId, tt, periods: await periods, exams, grades }));
           })().catch(e => emit(JSON.stringify({ error: String(e) })));
         })();
     """.trimIndent()
@@ -187,7 +274,7 @@ object AcademicWebSync {
         }.toList()
     }
 
-    fun parse(store: AcademicStore, rawResult: String, termLabel: String): AcademicSnapshot {
+    internal fun parse(rawResult: String, term: AcademicTerm): AcademicSnapshot {
         val root = unwrap(rawResult)
         (root["error"] as? JsonPrimitive)?.contentOrNull?.let {
             throw AcademicException("教务网页请求失败：$it")
@@ -202,18 +289,20 @@ object AcademicWebSync {
         }
         val exams = root["exams"] as? JsonArray ?: throw AcademicException("教务未返回考试数据")
         val grades = root["grades"] as? JsonArray ?: throw AcademicException("教务未返回成绩数据")
+        val studentId = (root["studentId"] as? JsonPrimitive)?.contentOrNull
+            ?.trim()?.takeIf { it.isNotEmpty() }
+            ?: throw AcademicException("未能确认当前教务学号，请重新登录")
         val metadata = TimetableMetadata(timetableRaw, (root["periods"] as? JsonPrimitive)?.contentOrNull)
-        val snapshot = AcademicSnapshot(
-            studentId = store.studentId,
-            termLabel = termLabel,
+        return AcademicSnapshot(
+            studentId = studentId,
+            termLabel = term.label,
             timetable = AcademicClient.parseTimetableRaw(timetableRaw),
             exams = AcademicClient.parseExamRows(exams),
             grades = AcademicClient.parseGradeRows(grades),
             updatedAt = System.currentTimeMillis(),
             timetablePeriods = metadata.periods,
-            timetableDays = metadata.days
+            timetableDays = metadata.days,
+            term = term
         )
-        store.saveSnapshot(snapshot)
-        return snapshot
     }
 }

@@ -1,28 +1,38 @@
 package space.nbtca.app.core.academic
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.net.Uri
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.webkit.CookieManager
+import android.webkit.WebStorage
+import androidx.webkit.WebStorageCompat
+import androidx.webkit.WebViewFeature
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlin.coroutines.resume
 
 /**
  * 教务数据本地仓库：学号、密码（Keystore 加密）、课表/考试/成绩快照全部落盘，
  * 断网也能看。密码只用于自动重新登录教务系统。
  */
-class AcademicStore private constructor(context: Context) {
+class AcademicStore internal constructor(private val prefs: SharedPreferences) {
 
-    private val prefs = context.getSharedPreferences("academic_store", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
-    var studentId: String
-        get() = prefs.getString(KEY_STUDENT_ID, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY_STUDENT_ID, value.trim()).apply()
+    val studentId: String
+        get() = prefs.getString(KEY_VERIFIED_STUDENT_ID, "").orEmpty()
 
     var password: String
         get() = decrypt(prefs.getString(KEY_PASSWORD, null)).orEmpty()
@@ -36,24 +46,113 @@ class AcademicStore private constructor(context: Context) {
 
     val hasCredentials: Boolean get() = studentId.isNotEmpty() && password.isNotEmpty()
 
-    fun loadSnapshot(): AcademicSnapshot? {
-        val raw = prefs.getString(KEY_SNAPSHOT, null) ?: return null
-        return runCatching { json.decodeFromString<AcademicSnapshot>(raw) }.getOrNull()
+    @Synchronized
+    fun loadSnapshots(): List<AcademicSnapshot> {
+        val owner = studentId
+        if (owner.isBlank()) return emptyList()
+        return readSnapshots().filter { it.studentId == owner }
     }
 
-    fun saveSnapshot(snapshot: AcademicSnapshot) {
-        prefs.edit().putString(KEY_SNAPSHOT, json.encodeToString(AcademicSnapshot.serializer(), snapshot)).apply()
+    private fun readSnapshots(): List<AcademicSnapshot> {
+        val current = prefs.getString(KEY_SNAPSHOTS, null)?.let {
+            runCatching { json.decodeFromString<List<AcademicSnapshot>>(it) }.getOrNull()
+        }
+        if (current != null) return current
+        val legacy = prefs.getString(KEY_SNAPSHOT, null) ?: return emptyList()
+        return listOfNotNull(runCatching { json.decodeFromString<AcademicSnapshot>(legacy) }.getOrNull())
     }
 
+    @Synchronized
+    internal fun saveSnapshot(snapshot: AcademicSnapshot, sessionCookies: String) {
+        val retained = readSnapshots().filterNot {
+            it.studentId == snapshot.studentId && it.matchesTerm(snapshot)
+        }
+        prefs.edit()
+            .putSession(snapshot.studentId, sessionCookies)
+            .putString(KEY_SNAPSHOTS, json.encodeToString(listOf(snapshot) + retained))
+            .remove(KEY_SNAPSHOT)
+            .apply()
+    }
+
+    @Synchronized
+    internal fun saveWebSession(studentId: String, sessionCookies: String) {
+        prefs.edit().putSession(studentId, sessionCookies).apply()
+    }
+
+    private fun SharedPreferences.Editor.putSession(studentId: String, sessionCookies: String): SharedPreferences.Editor {
+        require(studentId.isNotBlank() && sessionCookies.isNotBlank())
+        if (studentId != this@AcademicStore.studentId) remove(KEY_PASSWORD)
+        return putString(KEY_VERIFIED_STUDENT_ID, studentId)
+            .putString(KEY_COOKIES, sessionCookies)
+            .remove(KEY_STUDENT_ID)
+    }
+
+    @Synchronized
     fun clearCredentials() {
-        prefs.edit().remove(KEY_STUDENT_ID).remove(KEY_PASSWORD).remove(KEY_COOKIES).apply()
+        prefs.edit()
+            .remove(KEY_VERIFIED_STUDENT_ID)
+            .remove(KEY_STUDENT_ID)
+            .remove(KEY_PASSWORD)
+            .remove(KEY_COOKIES)
+            .apply()
+    }
+
+    suspend fun signOut() = withContext(NonCancellable + Dispatchers.Main) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+            suspendCancellableCoroutine<Unit> { completion ->
+                WebStorageCompat.deleteBrowsingDataForSite(WebStorage.getInstance(), "nbt.edu.cn") {
+                    completion.resume(Unit)
+                }
+            }
+        } else {
+            withContext(Dispatchers.IO) { clearLegacyWebCookies() }
+        }
+        clearCredentials()
+    }
+
+    private fun clearLegacyWebCookies() {
+        val manager = CookieManager.getInstance()
+        val entryPoints = listOf(
+            "https://webvpn.nbt.edu.cn/users/auth/cas/callback",
+            "https://webvpn.nbt.edu.cn/users/sign_in",
+            "https://webvpn.nbt.edu.cn/login",
+            "https://webvpn.nbt.edu.cn/vpn_key/update",
+            "https://authserver-443.webvpn.nbt.edu.cn/authserver/login",
+            "https://authserver.nbt.edu.cn/authserver/login",
+            AcademicWebSync.JWXT_SSO_URL,
+            AcademicWebSync.JWXT_MENU_URL,
+            AcademicWebSync.TIMETABLE_URL
+        )
+        for (url in entryPoints) {
+            val header = manager.getCookie(url) ?: continue
+            val names = header.split(';').map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }.distinct()
+            val uri = Uri.parse(url)
+            val host = requireNotNull(uri.host)
+            val domains = listOf(null, host, host.substringAfter('.', host), "nbt.edu.cn")
+                .filter { it == null || it == "nbt.edu.cn" || it.endsWith(".nbt.edu.cn") }
+                .distinct()
+            // CookieManager on older WebViews exposes names without their Domain and Path attributes.
+            var path = ""
+            val paths = buildList {
+                add("/")
+                for (segment in uri.pathSegments) {
+                    path += "/$segment"
+                    add(path)
+                    add("$path/")
+                }
+            }
+            for (name in names) for (domain in domains) for (cookiePath in paths) {
+                val domainAttribute = domain?.let { "; Domain=$it" }.orEmpty()
+                manager.setCookie(url, "$name=; Max-Age=0; Path=$cookiePath; Secure$domainAttribute")
+            }
+        }
+        manager.flush()
     }
 
     fun clearAll() = prefs.edit().clear().apply()
 
-    var cookies: String?
+    val cookies: String?
         get() = prefs.getString(KEY_COOKIES, null)
-        set(value) = prefs.edit().putString(KEY_COOKIES, value).apply()
 
     // ---------------- Keystore AES/GCM ----------------
 
@@ -97,8 +196,10 @@ class AcademicStore private constructor(context: Context) {
 
     companion object {
         private const val KEY_STUDENT_ID = "student_id"
+        private const val KEY_VERIFIED_STUDENT_ID = "verified_student_id"
         private const val KEY_PASSWORD = "password_cipher"
         private const val KEY_SNAPSHOT = "snapshot"
+        private const val KEY_SNAPSHOTS = "term_snapshots"
         private const val KEY_COOKIES = "cookies"
         private const val KEY_ALIAS = "nbtca_academic_password"
 
@@ -107,7 +208,9 @@ class AcademicStore private constructor(context: Context) {
 
         fun getInstance(context: Context): AcademicStore =
             instance ?: synchronized(this) {
-                instance ?: AcademicStore(context.applicationContext).also { instance = it }
+                instance ?: AcademicStore(
+                    context.applicationContext.getSharedPreferences("academic_store", Context.MODE_PRIVATE)
+                ).also { instance = it }
             }
     }
 }

@@ -25,12 +25,15 @@ import androidx.compose.foundation.verticalScroll
 import kotlinx.coroutines.launch
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.ChevronLeft
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -43,11 +46,13 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.Alignment
@@ -82,12 +87,15 @@ private fun AcademicScaffold(
     title: String,
     store: AcademicStore,
     onBack: () -> Unit,
-    showSyncSummary: Boolean = true,
-    content: @Composable (AcademicSnapshot?) -> Unit
+    preferredTerm: (List<AcademicSnapshot>) -> AcademicSnapshot? = { it.firstOrNull() },
+    content: @Composable (AcademicSnapshot) -> Unit
 ) {
-    var snapshot by remember { mutableStateOf(store.loadSnapshot()) }
+    var snapshots by remember(store) { mutableStateOf(store.loadSnapshots()) }
+    var selectedTermKey by rememberSaveable { mutableStateOf<String?>(null) }
+    var termMenu by remember { mutableStateOf(false) }
     var showSync by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
+    val snapshot = snapshots.firstOrNull { it.termKey == selectedTermKey } ?: preferredTerm(snapshots)
 
     // 只做提示，不自动拉取：是否同步由用户点「同步」决定
     fun requestSync() {
@@ -118,18 +126,34 @@ private fun AcademicScaffold(
         }
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding)) {
-            if (showSyncSummary) {
+            if (snapshot != null) {
                 Row(
-                    modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
+                    Box(Modifier.weight(1f)) {
+                        TextButton(onClick = { termMenu = true }) {
+                            Text(snapshot.displayTerm, modifier = Modifier.weight(1f, fill = false))
+                            Icon(Icons.Default.ArrowDropDown, contentDescription = "切换学期")
+                        }
+                        DropdownMenu(expanded = termMenu, onDismissRequest = { termMenu = false }) {
+                            snapshots.sortedByDescending { it.displayTerm }.forEach { term ->
+                                DropdownMenuItem(
+                                    text = { Text(term.displayTerm) },
+                                    onClick = {
+                                        selectedTermKey = term.termKey
+                                        termMenu = false
+                                    }
+                                )
+                            }
+                        }
+                    }
                     Text(
-                        text = snapshot?.let(::academicSyncSummary) ?: "尚未同步教务数据",
-                        modifier = Modifier.weight(1f),
-                        fontSize = 12.sp,
+                        text = "更新于 ${formatSyncTime(snapshot.updatedAt)}",
+                        modifier = Modifier.padding(end = 8.dp),
+                        style = MaterialTheme.typography.bodySmall,
                         color = AppThemeColors.textSecondary
                     )
-                    TextButton(onClick = { requestSync() }) { Text("同步") }
                 }
             }
             error?.let {
@@ -152,7 +176,7 @@ private fun AcademicScaffold(
                     }
                 }
             } else {
-                content(snapshot)
+                key(snapshot.termKey) { content(snapshot) }
             }
         }
     }
@@ -160,18 +184,38 @@ private fun AcademicScaffold(
     if (showSync) {
         AcademicSyncScreen(
             store = store,
-            onBack = { showSync = false },
-            onSynced = {
-                snapshot = store.loadSnapshot()
-                error = null
+            onBack = {
+                snapshots = store.loadSnapshots()
+                showSync = false
+            },
+            onSynced = { warning ->
+                snapshots = store.loadSnapshots()
+                error = warning
                 showSync = false
             }
         )
     }
 }
 
-private fun academicSyncSummary(snapshot: AcademicSnapshot): String =
-    "${snapshot.termLabel} · 更新于 ${formatSyncTime(snapshot.updatedAt)}"
+private val AcademicSnapshot.displayTerm: String
+    get() = termLabel.ifBlank { "已同步学期" }
+
+private fun AcademicSnapshot.calendarMonday(weekInfo: SchoolWeek?): LocalDate? =
+    weekInfo?.firstMonday(termLabel, term?.academicYear, term?.semester)
+
+private fun AcademicSnapshot.weekCount(weekInfo: SchoolWeek?): Int = maxOf(
+    1,
+    if (calendarMonday(weekInfo) != null) weekInfo?.total ?: 0 else 0,
+    timetableDays.maxOfOrNull { it.week } ?: 0,
+    timetable.maxOfOrNull { it.weeks.maxOrNull() ?: 0 } ?: 0
+)
+
+private fun AcademicSnapshot.currentWeek(today: LocalDate, weekInfo: SchoolWeek?): Int? {
+    val calendar = calendarMonday(weekInfo)
+    val firstMonday = timetableWeekOne(timetableDays, calendar) ?: calendar
+    return timetableDays.firstOrNull { it.date == today.toString() }?.week
+        ?: timetableCurrentWeek(today, firstMonday, weekCount(weekInfo))
+}
 
 private fun formatSyncTime(epoch: Long): String {
     if (epoch <= 0L) return "-"
@@ -188,29 +232,23 @@ fun TimetableScreen(
     val scope = rememberCoroutineScope()
     var weekInfo by remember { mutableStateOf<SchoolWeek?>(null) }
     LaunchedEffect(Unit) { weekInfo = apiClient.getSchoolWeek() }
+    val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
 
-    AcademicScaffold(title = "课表", store = store, onBack = onBack, showSyncSummary = false) { snapshot ->
-        if (snapshot == null || snapshot.timetable.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("本学期暂无课表数据", color = AppThemeColors.textSecondary)
-            }
-            return@AcademicScaffold
+    AcademicScaffold(
+        title = "课表",
+        store = store,
+        onBack = onBack,
+        preferredTerm = { snapshots ->
+            snapshots.firstOrNull { it.currentWeek(today, weekInfo) != null } ?: snapshots.firstOrNull()
         }
-
+    ) { snapshot ->
         val courses = snapshot.timetable
-        val today = LocalDate.now(ZoneId.of("Asia/Shanghai"))
         val firstMonday = remember(snapshot, weekInfo) {
-            timetableWeekOne(snapshot.timetableDays, weekInfo?.firstMonday(snapshot.termLabel))
+            timetableWeekOne(snapshot.timetableDays, snapshot.calendarMonday(weekInfo))
         }
         val dates = remember(snapshot) { snapshot.timetableDays.associateBy { it.week to it.weekday } }
-        val totalWeeks = maxOf(
-            1,
-            weekInfo?.total ?: 0,
-            snapshot.timetableDays.maxOfOrNull { it.week } ?: 0,
-            courses.maxOfOrNull { it.weeks.maxOrNull() ?: 0 } ?: 0
-        )
-        val currentWeek = snapshot.timetableDays.firstOrNull { it.date == today.toString() }?.week
-            ?: timetableCurrentWeek(today, firstMonday, totalWeeks)
+        val totalWeeks = snapshot.weekCount(weekInfo)
+        val currentWeek = snapshot.currentWeek(today, weekInfo)
         val periodCount = maxOf(
             10,
             snapshot.timetablePeriods.keys.maxOrNull() ?: 0,
@@ -250,13 +288,23 @@ fun TimetableScreen(
                         style = MaterialTheme.typography.titleMedium,
                         color = MaterialTheme.colorScheme.primary
                     )
-                    Text(
-                        academicSyncSummary(snapshot),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                    if (currentWeek != null) {
+                        TextButton(
+                            enabled = pagerState.currentPage != currentWeek - 1,
+                            onClick = { scope.launch { pagerState.animateScrollToPage(currentWeek - 1) } }
+                        ) { Text("当前第 $currentWeek 周") }
+                    } else {
+                        val weekOne = firstMonday ?: snapshot.calendarMonday(weekInfo)
+                        Text(
+                            text = when {
+                                weekOne == null -> "当前周次暂不可用"
+                                today.isBefore(weekOne) -> "本学期尚未开始"
+                                else -> "本学期已结束"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                 }
                 IconButton(onClick = {
                     scope.launch {
@@ -267,6 +315,13 @@ fun TimetableScreen(
                 }, enabled = pagerState.currentPage < totalWeeks - 1) {
                     Icon(Icons.Default.ChevronRight, contentDescription = "下一周")
                 }
+            }
+
+            if (courses.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("本学期暂无课表数据", color = AppThemeColors.textSecondary)
+                }
+                return@Column
             }
 
             if (snapshot.timetablePeriods.isEmpty()) {
@@ -505,7 +560,7 @@ private fun compressWeeks(weeks: List<Int>): String {
 @Composable
 fun ExamsScreen(store: AcademicStore, onBack: () -> Unit) {
     AcademicScaffold(title = "考试查询", store = store, onBack = onBack) { snapshot ->
-        val exams = snapshot?.exams.orEmpty()
+        val exams = snapshot.exams
         if (exams.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("本学期的考试安排为空", color = AppThemeColors.textSecondary)
@@ -547,7 +602,7 @@ fun ExamsScreen(store: AcademicStore, onBack: () -> Unit) {
 @Composable
 fun GradesScreen(store: AcademicStore, onBack: () -> Unit) {
     AcademicScaffold(title = "成绩查询", store = store, onBack = onBack) { snapshot ->
-        val grades = snapshot?.grades.orEmpty()
+        val grades = snapshot.grades
         if (grades.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text("本学期暂无成绩记录", color = AppThemeColors.textSecondary)

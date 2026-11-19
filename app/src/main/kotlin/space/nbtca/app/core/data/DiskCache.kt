@@ -4,6 +4,9 @@ import android.content.Context
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption.ATOMIC_MOVE
+import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.security.MessageDigest
 
 /**
@@ -30,18 +33,16 @@ class DiskCache(directory: File) {
     fun <T> readStale(key: String, serializer: KSerializer<T>): T? =
         read(key, serializer, maxAgeMs = 0)
 
-    fun <T> write(key: String, serializer: KSerializer<T>, value: T) {
+    fun <T> write(key: String, serializer: KSerializer<T>, value: T): Boolean {
         val target = fileFor(key)
         val temp = File(root, target.name + ".tmp")
-        synchronized(this) {
-            runCatching {
+        return synchronized(this) {
+            val written = runCatching {
                 temp.writeText(json.encodeToString(serializer, value), Charsets.UTF_8)
-                if (target.exists()) target.delete()
-                if (!temp.renameTo(target)) {
-                    temp.copyTo(target, overwrite = true)
-                    temp.delete()
-                }
-            }
+                Files.move(temp.toPath(), target.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
+            }.isSuccess
+            if (!written) runCatching { Files.deleteIfExists(temp.toPath()) }
+            written
         }
     }
 
