@@ -32,7 +32,6 @@ import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -65,6 +64,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import space.nbtca.app.core.auth.AuthManager
 import space.nbtca.app.core.config.AppearanceSettings
@@ -105,6 +105,8 @@ fun ProfileScreen(
     var academicBound by remember { mutableStateOf(academicStore.studentId) }
     var academicSession by remember { mutableStateOf(!academicStore.cookies.isNullOrBlank()) }
     var showCampusLogin by remember { mutableStateOf(false) }
+    var academicSigningOut by remember { mutableStateOf(false) }
+    var academicSignOutFailed by remember { mutableStateOf(false) }
 
     if (showLogin) {
         LoginScreen(
@@ -256,7 +258,10 @@ fun ProfileScreen(
                             append(if (academicSession) "已登录" else "未登录")
                         },
                         trailing = { Icon(Icons.Default.ChevronRight, contentDescription = null, tint = Color.Gray) }
-                    ) { showAcademicDialog = true }
+                    ) {
+                        academicSignOutFailed = false
+                        showAcademicDialog = true
+                    }
                 }
             }
 
@@ -409,47 +414,54 @@ fun ProfileScreen(
 
     if (showAcademicDialog) {
         AlertDialog(
-            onDismissRequest = { showAcademicDialog = false },
+            onDismissRequest = { if (!academicSigningOut) showAcademicDialog = false },
             title = { Text("教务系统账号") },
             text = {
                 Column {
-                    Text(
-                        "学校登录已启用验证码，请在应用内打开教务网页完成登录；登录后的会话会保存在本机，课表/考试/成绩全部缓存到本地。",
-                        fontSize = 12.sp,
-                        lineHeight = 17.sp,
-                        color = AppThemeColors.textSecondary
-                    )
                     Text(
                         text = if (academicSession) {
                             "教务会话：已登录" + (if (academicBound.isNotBlank()) "（学号 $academicBound）" else "")
                         } else {
                             "教务会话：未登录"
                         },
-                        modifier = Modifier.padding(top = 12.dp),
-                        fontSize = 12.sp,
                         color = if (academicSession) MaterialTheme.colorScheme.primary else AppThemeColors.textSecondary
                     )
-                    Row(modifier = Modifier.padding(top = 6.dp)) {
-                        Button(
-                            onClick = {
-                                showAcademicDialog = false
-                                showCampusLogin = true
-                            },
-                            shape = RoundedCornerShape(10.dp),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                        ) { Text("教务网页登录") }
-                        Spacer(modifier = Modifier.width(10.dp))
-                        TextButton(onClick = {
-                            academicStore.clearCredentials()
-                            academicStore.cookies = null
-                            academicBound = ""
-                            academicSession = false
-                        }) { Text("清除会话", color = Color(0xFFFF5252)) }
+                    if (academicSignOutFailed) {
+                        Text("未能清除教务会话，请重试", color = MaterialTheme.colorScheme.error)
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { showAcademicDialog = false }) { Text("关闭") }
+                Button(
+                    enabled = !academicSigningOut,
+                    onClick = {
+                        showAcademicDialog = false
+                        showCampusLogin = true
+                    }
+                ) { Text("登录") }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !academicSigningOut,
+                    onClick = {
+                        academicSigningOut = true
+                        academicSignOutFailed = false
+                        updateScope.launch {
+                            try {
+                                academicStore.signOut()
+                                academicBound = ""
+                                academicSession = false
+                                showAcademicDialog = false
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (_: Exception) {
+                                academicSignOutFailed = true
+                            } finally {
+                                academicSigningOut = false
+                            }
+                        }
+                    }
+                ) { Text(if (academicSigningOut) "登出中…" else "登出") }
             }
         )
     }

@@ -25,6 +25,27 @@ data class TermCatalog(
  */
 object AcademicWebSync {
 
+    internal const val JWXT_ORIGIN = "https://jwxt-443.webvpn.nbt.edu.cn"
+    internal const val JWXT_SSO_URL = "$JWXT_ORIGIN/sso/jziotlogin"
+    internal const val JWXT_MENU_PATH = "/jwglxt/xtgl/index_initMenu.html"
+    internal const val JWXT_MENU_URL = "$JWXT_ORIGIN$JWXT_MENU_PATH"
+    internal const val TIMETABLE_PATH = "/jwglxt/kbcx/xskbcx_cxXskbcxIndex.html"
+    internal const val TIMETABLE_URL = "$JWXT_ORIGIN$TIMETABLE_PATH?gnmkdm=N2151&layout=default"
+
+    internal val PORTAL_READY_SCRIPT = """
+        (() => location.origin === 'https://webvpn.nbt.edu.cn'
+          && (document.body?.innerText ?? '').includes('常用站点')
+          && !document.querySelector('#pwdEncryptSalt, input[type="password"]'))()
+    """.trimIndent()
+
+    internal val TIMETABLE_READY_SCRIPT = """
+        (() => location.origin === '$JWXT_ORIGIN'
+          && location.pathname === '$TIMETABLE_PATH'
+          && !document.querySelector('#pwdEncryptSalt, input[type="password"]')
+          && !!document.querySelector('select#xnm, select[name="xnm"]')
+          && !!document.querySelector('select#xqm, select[name="xqm"]'))()
+    """.trimIndent()
+
     /** 读取可选学期列表。 */
     /** 读取可选学期列表：先看当前页面/子框架，再依次尝试多个课表入口 URL。 */
     /** 读取可选学期列表：当前页面/子框架 → 多个课表入口；结果写 localStorage 防页面刷新丢失。 */

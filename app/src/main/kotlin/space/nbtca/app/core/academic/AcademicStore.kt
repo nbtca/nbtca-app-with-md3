@@ -1,15 +1,25 @@
 package space.nbtca.app.core.academic
 
 import android.content.Context
+import android.net.Uri
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.util.Base64
+import android.webkit.CookieManager
+import android.webkit.WebStorage
+import androidx.webkit.WebStorageCompat
+import androidx.webkit.WebViewFeature
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.security.KeyStore
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlin.coroutines.resume
 
 /**
  * 教务数据本地仓库：学号、密码（Keystore 加密）、课表/考试/成绩快照全部落盘，
@@ -47,6 +57,58 @@ class AcademicStore private constructor(context: Context) {
 
     fun clearCredentials() {
         prefs.edit().remove(KEY_STUDENT_ID).remove(KEY_PASSWORD).remove(KEY_COOKIES).apply()
+    }
+
+    suspend fun signOut() = withContext(NonCancellable + Dispatchers.Main) {
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.DELETE_BROWSING_DATA)) {
+            suspendCancellableCoroutine<Unit> { completion ->
+                WebStorageCompat.deleteBrowsingDataForSite(WebStorage.getInstance(), "nbt.edu.cn") {
+                    completion.resume(Unit)
+                }
+            }
+        } else {
+            withContext(Dispatchers.IO) { clearLegacyWebCookies() }
+        }
+        clearCredentials()
+    }
+
+    private fun clearLegacyWebCookies() {
+        val manager = CookieManager.getInstance()
+        val entryPoints = listOf(
+            "https://webvpn.nbt.edu.cn/users/auth/cas/callback",
+            "https://webvpn.nbt.edu.cn/users/sign_in",
+            "https://webvpn.nbt.edu.cn/login",
+            "https://webvpn.nbt.edu.cn/vpn_key/update",
+            "https://authserver-443.webvpn.nbt.edu.cn/authserver/login",
+            "https://authserver.nbt.edu.cn/authserver/login",
+            AcademicWebSync.JWXT_SSO_URL,
+            AcademicWebSync.JWXT_MENU_URL,
+            AcademicWebSync.TIMETABLE_URL
+        )
+        for (url in entryPoints) {
+            val header = manager.getCookie(url) ?: continue
+            val names = header.split(';').map { it.substringBefore('=').trim() }.filter { it.isNotEmpty() }.distinct()
+            val uri = Uri.parse(url)
+            val host = requireNotNull(uri.host)
+            val domains = listOf(null, host, host.substringAfter('.', host), "nbt.edu.cn")
+                .filter { it == null || it == "nbt.edu.cn" || it.endsWith(".nbt.edu.cn") }
+                .distinct()
+            // CookieManager on older WebViews exposes names without their Domain and Path attributes.
+            var path = ""
+            val paths = buildList {
+                add("/")
+                for (segment in uri.pathSegments) {
+                    path += "/$segment"
+                    add(path)
+                    add("$path/")
+                }
+            }
+            for (name in names) for (domain in domains) for (cookiePath in paths) {
+                val domainAttribute = domain?.let { "; Domain=$it" }.orEmpty()
+                manager.setCookie(url, "$name=; Max-Age=0; Path=$cookiePath; Secure$domainAttribute")
+            }
+        }
+        manager.flush()
     }
 
     fun clearAll() = prefs.edit().clear().apply()
