@@ -1,5 +1,6 @@
 package space.nbtca.app.core.academic
 
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -101,12 +102,14 @@ object AcademicWebSync {
     """.trimIndent()
 
     /** 指定学期的课表 / 考试 / 成绩。 */
-    fun dataScript(xnm: String, xqm: String): String = """
+    fun dataScript(term: AcademicTerm, requestId: String): String = """
         (function () {
-          const KEY = 'nbt_sync';
+          const requestId = ${json.encodeToString(requestId)};
+          window.__nbtSyncRequest = requestId;
           window.__nbtSync = null;
-          try { localStorage.removeItem(KEY); } catch (e) {}
-          const emit = (v) => { window.__nbtSync = v; try { localStorage.setItem(KEY, v); } catch (e) {} };
+          const emit = (result) => {
+            if (window.__nbtSyncRequest === requestId) window.__nbtSync = { requestId, result };
+          };
           const enc = (o) => Object.keys(o).map(k => encodeURIComponent(k) + '=' + encodeURIComponent(o[k])).join('&');
           const H = async (u, o) => {
             const res = await fetch(u, Object.assign({ credentials: 'include', cache: 'no-store' }, o || {}));
@@ -114,7 +117,7 @@ object AcademicWebSync {
             if (res.url.indexOf('authserver') >= 0) throw new Error('登录状态已失效，请重新登录');
             return res;
           };
-          const XNM = '$xnm', XQM = '$xqm';
+          const XNM = ${json.encodeToString(term.academicYear)}, XQM = ${json.encodeToString(term.semester)};
           (async () => {
             const timetableRequest = {
               method: 'POST',
@@ -208,7 +211,7 @@ object AcademicWebSync {
         }.toList()
     }
 
-    fun parse(store: AcademicStore, rawResult: String, termLabel: String): AcademicSnapshot {
+    fun parse(store: AcademicStore, rawResult: String, term: AcademicTerm): AcademicSnapshot {
         val root = unwrap(rawResult)
         (root["error"] as? JsonPrimitive)?.contentOrNull?.let {
             throw AcademicException("教务网页请求失败：$it")
@@ -223,16 +226,20 @@ object AcademicWebSync {
         }
         val exams = root["exams"] as? JsonArray ?: throw AcademicException("教务未返回考试数据")
         val grades = root["grades"] as? JsonArray ?: throw AcademicException("教务未返回成绩数据")
+        val identity = (timetableJson as? JsonObject)?.get("xsxx") as? JsonObject
+        val studentId = (identity?.get("xh") as? JsonPrimitive)?.contentOrNull
+            ?.takeIf { it.isNotBlank() } ?: store.studentId
         val metadata = TimetableMetadata(timetableRaw, (root["periods"] as? JsonPrimitive)?.contentOrNull)
         val snapshot = AcademicSnapshot(
-            studentId = store.studentId,
-            termLabel = termLabel,
+            studentId = studentId,
+            termLabel = term.label,
             timetable = AcademicClient.parseTimetableRaw(timetableRaw),
             exams = AcademicClient.parseExamRows(exams),
             grades = AcademicClient.parseGradeRows(grades),
             updatedAt = System.currentTimeMillis(),
             timetablePeriods = metadata.periods,
-            timetableDays = metadata.days
+            timetableDays = metadata.days,
+            term = term
         )
         store.saveSnapshot(snapshot)
         return snapshot

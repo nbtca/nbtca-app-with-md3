@@ -14,14 +14,15 @@ data class SchoolWeek(
     val total: Int = TOTAL_WEEKS,
     val termMondays: Map<String, String>? = null
 ) {
-    fun firstMonday(termLabel: String): LocalDate? {
-        val academicYear = Regex("(?<!\\d)20\\d{2}(?!\\d)").find(termLabel)?.value ?: return null
-        val semester = when (termLabel.substringAfterLast('·').trim()) {
-            "1", "第一学期", "第1学期", "秋季学期" -> "fall"
-            "2", "第二学期", "第2学期", "春季学期" -> "spring"
+    fun firstMonday(termLabel: String, yearCode: String? = null, semesterCode: String? = null): LocalDate? {
+        val academicYear = yearCode?.takeIf { it.matches(Regex("20\\d{2}")) }
+            ?: Regex("(?<!\\d)20\\d{2}(?!\\d)").find(termLabel)?.value ?: return null
+        val semester = when (semesterCode ?: termLabel.substringAfterLast('·').trim()) {
+            "3", "1", "第一学期", "第1学期", "秋季学期" -> "fall"
+            "12", "2", "第二学期", "第2学期", "春季学期" -> "spring"
             else -> return null
         }
-        return termMondays?.get("$academicYear-$semester")?.let(LocalDate::parse)
+        return termMondays?.get("$academicYear-$semester")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
     }
 
     companion object {

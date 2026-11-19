@@ -13,6 +13,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import java.security.KeyStore
 import javax.crypto.Cipher
@@ -46,13 +47,36 @@ class AcademicStore private constructor(context: Context) {
 
     val hasCredentials: Boolean get() = studentId.isNotEmpty() && password.isNotEmpty()
 
-    fun loadSnapshot(): AcademicSnapshot? {
-        val raw = prefs.getString(KEY_SNAPSHOT, null) ?: return null
-        return runCatching { json.decodeFromString<AcademicSnapshot>(raw) }.getOrNull()
+    @Synchronized
+    fun loadSnapshots(): List<AcademicSnapshot> {
+        val snapshots = readSnapshots()
+        val owner = studentId.ifBlank { snapshots.firstOrNull()?.studentId.orEmpty() }
+        val otherAccountExists = snapshots.any { it.studentId.isNotBlank() && it.studentId != owner }
+        return snapshots.filter { it.studentId == owner || (it.studentId.isBlank() && !otherAccountExists) }
     }
 
+    private fun readSnapshots(): List<AcademicSnapshot> {
+        val current = prefs.getString(KEY_SNAPSHOTS, null)?.let {
+            runCatching { json.decodeFromString<List<AcademicSnapshot>>(it) }.getOrNull()
+        }
+        if (current != null) return current
+        val legacy = prefs.getString(KEY_SNAPSHOT, null) ?: return emptyList()
+        return listOfNotNull(runCatching { json.decodeFromString<AcademicSnapshot>(legacy) }.getOrNull())
+    }
+
+    @Synchronized
     fun saveSnapshot(snapshot: AcademicSnapshot) {
-        prefs.edit().putString(KEY_SNAPSHOT, json.encodeToString(AcademicSnapshot.serializer(), snapshot)).apply()
+        val stored = readSnapshots()
+        val otherAccountExists = stored.any { it.studentId.isNotBlank() && it.studentId != snapshot.studentId }
+        val retained = stored.filterNot {
+            val sameAccount = it.studentId == snapshot.studentId || (it.studentId.isBlank() && !otherAccountExists)
+            sameAccount && it.matchesTerm(snapshot)
+        }
+        val editor = prefs.edit()
+            .putString(KEY_SNAPSHOTS, json.encodeToString(listOf(snapshot) + retained))
+            .remove(KEY_SNAPSHOT)
+        if (snapshot.studentId.isNotBlank()) editor.putString(KEY_STUDENT_ID, snapshot.studentId)
+        editor.apply()
     }
 
     fun clearCredentials() {
@@ -161,6 +185,7 @@ class AcademicStore private constructor(context: Context) {
         private const val KEY_STUDENT_ID = "student_id"
         private const val KEY_PASSWORD = "password_cipher"
         private const val KEY_SNAPSHOT = "snapshot"
+        private const val KEY_SNAPSHOTS = "term_snapshots"
         private const val KEY_COOKIES = "cookies"
         private const val KEY_ALIAS = "nbtca_academic_password"
 
