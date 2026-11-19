@@ -49,6 +49,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import space.nbtca.app.core.config.AppFontSize
 import space.nbtca.app.core.config.AppearanceSettings
 import space.nbtca.app.core.config.ThemeMode
 import space.nbtca.app.core.config.ThemePalette
@@ -93,7 +94,17 @@ internal fun AppearanceScreen(
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     AppearanceHeading("显示模式")
-                    ModePicker(appearance.mode) { onAppearanceChange(appearance.copy(mode = it)) }
+                    AppearanceOptions(ThemeMode.entries, appearance.mode, ThemeMode::label) {
+                        onAppearanceChange(appearance.copy(mode = it))
+                    }
+                }
+            }
+            item {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    AppearanceHeading("全局字号")
+                    AppearanceOptions(AppFontSize.entries, appearance.fontSize, AppFontSize::label) {
+                        onAppearanceChange(appearance.copy(fontSize = it))
+                    }
                 }
             }
             if (supportsWallpaperColors) {
@@ -168,25 +179,30 @@ private fun AppearancePreview(title: String, isDark: Boolean) {
 
 @OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun ModePicker(selected: ThemeMode, onSelect: (ThemeMode) -> Unit) {
+private fun <T> AppearanceOptions(
+    options: List<T>,
+    selected: T,
+    label: (T) -> String,
+    onSelect: (T) -> Unit
+) {
     Row(
         modifier = Modifier.fillMaxWidth().selectableGroup(),
         horizontalArrangement = Arrangement.spacedBy(ButtonGroupDefaults.ConnectedSpaceBetween)
     ) {
-        ThemeMode.entries.forEach { mode ->
-            val shapes = when (mode) {
-                ThemeMode.System -> ButtonGroupDefaults.connectedLeadingButtonShapes()
-                ThemeMode.Light -> ButtonGroupDefaults.connectedMiddleButtonShapes()
-                ThemeMode.Dark -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+        options.forEachIndexed { index, option ->
+            val shapes = when (index) {
+                0 -> ButtonGroupDefaults.connectedLeadingButtonShapes()
+                options.lastIndex -> ButtonGroupDefaults.connectedTrailingButtonShapes()
+                else -> ButtonGroupDefaults.connectedMiddleButtonShapes()
             }
             ToggleButton(
-                checked = selected == mode,
-                onCheckedChange = { if (it) onSelect(mode) },
+                checked = selected == option,
+                onCheckedChange = { if (it) onSelect(option) },
                 modifier = Modifier.weight(1f),
                 shapes = shapes,
                 contentPadding = PaddingValues(horizontal = 6.dp, vertical = 8.dp)
             ) {
-                Text(mode.label)
+                Text(label(option))
             }
         }
     }

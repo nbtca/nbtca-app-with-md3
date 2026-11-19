@@ -18,10 +18,19 @@ enum class ThemePalette(val key: String, val label: String) {
     Graphite("graphite", "石墨灰")
 }
 
+enum class AppFontSize(val key: String, val label: String, val multiplier: Float) {
+    ExtraSmall("extra_small", "特小", 0.85f),
+    Small("small", "小", 0.90f),
+    Standard("standard", "标准", 1f),
+    Large("large", "大", 1.10f),
+    ExtraLarge("extra_large", "特大", 1.20f)
+}
+
 data class AppearanceSettings(
     val mode: ThemeMode = ThemeMode.System,
     val palette: ThemePalette = ThemePalette.NbtcaBlue,
-    val dynamicColor: Boolean = false
+    val dynamicColor: Boolean = false,
+    val fontSize: AppFontSize = AppFontSize.Standard
 )
 
 class AppSettings private constructor(context: Context) {
@@ -31,10 +40,12 @@ class AppSettings private constructor(context: Context) {
         get() {
             val mode = prefs.getString(KEY_THEME_MODE, null)
             val palette = prefs.getString(KEY_PALETTE, null)
+            val fontSize = prefs.getString(KEY_FONT_SIZE, null)
             return AppearanceSettings(
                 mode = ThemeMode.entries.firstOrNull { it.key == mode } ?: ThemeMode.System,
                 palette = ThemePalette.entries.firstOrNull { it.key == palette } ?: ThemePalette.NbtcaBlue,
-                dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false)
+                dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, false),
+                fontSize = AppFontSize.entries.firstOrNull { it.key == fontSize } ?: AppFontSize.Standard
             )
         }
         set(value) {
@@ -42,6 +53,7 @@ class AppSettings private constructor(context: Context) {
                 .putString(KEY_THEME_MODE, value.mode.key)
                 .putString(KEY_PALETTE, value.palette.key)
                 .putBoolean(KEY_DYNAMIC_COLOR, value.dynamicColor)
+                .putString(KEY_FONT_SIZE, value.fontSize.key)
                 .apply()
         }
 
@@ -49,6 +61,7 @@ class AppSettings private constructor(context: Context) {
         private const val KEY_THEME_MODE = "settings.theme_mode"
         private const val KEY_PALETTE = "settings.theme_palette"
         private const val KEY_DYNAMIC_COLOR = "settings.dynamic_color"
+        private const val KEY_FONT_SIZE = "settings.font_size"
 
         @Volatile
         private var instance: AppSettings? = null
