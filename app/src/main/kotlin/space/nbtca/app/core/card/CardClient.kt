@@ -8,13 +8,29 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import java.io.IOException
+import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 
-class CardLoginRequired : Exception("Card 登录会话已失效，请重新授权")
+open class CardAuthorizationException(message: String) : Exception(message)
+class CardLoginRequired : CardAuthorizationException("Card 登录会话已失效，请重新授权")
+private class CardAccessDenied(message: String) : CardAuthorizationException(message)
+
 object CardClient {
     const val ORIGIN = "https://card.nbtca.space"
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .callTimeout(20, TimeUnit.SECONDS).build()
+
+    suspend fun cacheSession(): String? {
+        val cookies = withContext(Dispatchers.Main) { CookieManager.getInstance().getCookie(ORIGIN) }
+        val entries = cookies.orEmpty().split(';').map(String::trim).sorted()
+        if (entries.none { it.startsWith("CF_Authorization=") && it.length > "CF_Authorization=".length }) {
+            return null
+        }
+        return MessageDigest.getInstance("SHA-256")
+            .digest(entries.joinToString(";").toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
 
     suspend fun page(path: String, fields: Map<String, String>? = null): Document {
         require(path == "/me" || path == "/members" || path == "/e" || Regex("/(members|e)/[A-Za-z0-9_-]+").matches(path))
@@ -36,15 +52,16 @@ object CardClient {
                         val next = response.header("Location")?.let { response.request.url.resolve(it) }
                             ?: error("Card 返回了无效跳转")
                         if (next.scheme != "https" || next.host != "card.nbtca.space" || next.port != 443 || next.encodedPath.startsWith("/cdn-cgi/") || next.encodedPath == "/login") throw CardLoginRequired()
-                        if (next.encodedPath == "/forbidden") error("当前 Card 账号没有社员权限")
+                        if (next.encodedPath == "/forbidden") throw CardAccessDenied("当前 Card 账号没有社员权限")
                         url = next.toString()
                         if (response.code in listOf(301,302,303)) body = null
                     } else {
                         if (response.code == 401) throw CardLoginRequired()
-                        if (response.code == 403) error("当前 Card 账号没有访问权限，或登录需要重新验证")
+                        if (response.code == 403) throw CardAccessDenied("当前 Card 账号没有访问权限，或登录需要重新验证")
+                        if (response.code in 500..599) throw IOException("Card 请求失败（${response.code}）")
                         check(response.isSuccessful) { "Card 请求失败（${response.code}）" }
                         val doc = Jsoup.parse(response.body?.string().orEmpty(), url)
-                        check(doc.selectFirst("nav .brand") != null) { "Card 返回了验证页面，请重新登录" }
+                        if (doc.selectFirst("nav .brand") == null) throw CardLoginRequired()
                         return@withContext doc
                     }
                 }

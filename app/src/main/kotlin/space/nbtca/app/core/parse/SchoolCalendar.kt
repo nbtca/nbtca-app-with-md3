@@ -1,11 +1,29 @@
 package space.nbtca.app.core.parse
 
+import kotlinx.serialization.Serializable
+import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.temporal.ChronoUnit
+import java.time.temporal.TemporalAdjusters
 
-data class SchoolWeek(val current: Int, val total: Int = TOTAL_WEEKS) {
+@Serializable
+data class SchoolWeek(
+    val current: Int = 1,
+    val total: Int = TOTAL_WEEKS,
+    val termMondays: Map<String, String>? = null
+) {
+    fun firstMonday(termLabel: String): LocalDate? {
+        val academicYear = Regex("(?<!\\d)20\\d{2}(?!\\d)").find(termLabel)?.value ?: return null
+        val semester = when (termLabel.substringAfterLast('·').trim()) {
+            "1", "第一学期", "第1学期", "秋季学期" -> "fall"
+            "2", "第二学期", "第2学期", "春季学期" -> "spring"
+            else -> return null
+        }
+        return termMondays?.get("$academicYear-$semester")?.let(LocalDate::parse)
+    }
+
     companion object {
         const val TOTAL_WEEKS = 20
         val EMPTY = SchoolWeek(1, TOTAL_WEEKS)
@@ -37,7 +55,16 @@ object SchoolCalendar {
 
         val days = ChronoUnit.DAYS.between(start, today)
         val current = (days / 7 + 1).toInt().coerceIn(1, SchoolWeek.TOTAL_WEEKS)
-        return SchoolWeek(current, SchoolWeek.TOTAL_WEEKS)
+        val mondays = events.mapNotNull { event ->
+            val date = event.date ?: return@mapNotNull null
+            val key = when (event.title.trim()) {
+                "秋季学期开始上课" -> "${date.year}-fall"
+                "春季学期开始上课" -> "${date.year - 1}-spring"
+                else -> return@mapNotNull null
+            }
+            key to date.with(TemporalAdjusters.previousOrSame(DayOfWeek.MONDAY)).toString()
+        }.groupBy({ it.first }, { it.second }).mapValues { (_, dates) -> dates.minOrNull().orEmpty() }
+        return SchoolWeek(current, SchoolWeek.TOTAL_WEEKS, mondays)
     }
 
     private fun findTermStart(

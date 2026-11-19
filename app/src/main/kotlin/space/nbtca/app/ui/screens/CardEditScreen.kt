@@ -29,7 +29,13 @@ import space.nbtca.app.ui.theme.AppThemeColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-internal fun CardEditScreen(doc: Document, loader: coil.ImageLoader, onBack: () -> Unit, onSaved: (Document) -> Unit) {
+internal fun CardEditScreen(
+    doc: Document,
+    loader: coil.ImageLoader,
+    repository: CardRepository,
+    onBack: () -> Unit,
+    onSaved: (Document) -> Unit
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val original=remember(doc) { MemberCardData.parse(doc.selectFirst(".card.full")!!) }
@@ -69,10 +75,11 @@ internal fun CardEditScreen(doc: Document, loader: coil.ImageLoader, onBack: () 
             busy=true; error=null
             scope.launch {
                 try {
-                    CardRepository.saveProfile(fields.toMap())
-                    background?.let { CardMediaUpload.upload(context,"background",it) }
-                    portrait?.let { CardMediaUpload.upload(context,"portrait",it) }
-                    onSaved(CardRepository.load("/me"))
+                    val saved = repository.saveProfile(fields.toMap()) {
+                        background?.let { CardMediaUpload.upload(context, "background", it) }
+                        portrait?.let { CardMediaUpload.upload(context, "portrait", it) }
+                    }
+                    onSaved(saved)
                 } catch(cancelled:CancellationException) {throw cancelled}
                 catch(failure:Exception) {error="保存未完成：${failure.message}。已成功提交的部分会保留，可重试。"}
                 finally {busy=false}

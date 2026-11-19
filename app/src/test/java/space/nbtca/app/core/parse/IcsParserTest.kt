@@ -5,6 +5,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 
@@ -27,6 +28,8 @@ class IcsParserTest {
         )
         assertEquals(6, week.current)
         assertEquals(20, week.total)
+        assertEquals(LocalDate.of(2026, 9, 14), week.firstMonday("2026-2027 · 1"))
+        assertEquals(LocalDate.of(2024, 3, 11), week.firstMonday("2023-2024 · 第二学期"))
     }
 
     @Test

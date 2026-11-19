@@ -98,7 +98,7 @@ fun NewsroomScreen(apiClient: ApiClient) {
         topBar = {
             MediumFlexibleTopAppBar(
                 title = { Text("拔电关机") },
-                subtitle = { Text("宁波工程学院计算机协会") },
+                subtitle = { Text("To be at the intersection of technology and liberal arts.") },
                 actions = {
                     IconButton(onClick = { scope.launch { load(force = true) } }, enabled = !refreshing) {
                         Icon(Icons.Filled.Refresh, contentDescription = "刷新资讯")

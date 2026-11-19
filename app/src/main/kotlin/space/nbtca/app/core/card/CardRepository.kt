@@ -1,41 +1,176 @@
 package space.nbtca.app.core.card
 
+import android.content.Context
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import space.nbtca.app.core.data.DiskCache
+import java.io.File
+import java.io.IOException
 
 data class CardClaimField(val name: String, val label: String, val value: String, val required: Boolean, val maxLength: Int, val hidden: Boolean)
 
+internal data class CardPage(val document: Document, val usingCachedCopy: Boolean = false)
+
 /** Compatibility adapter for the maintainer's existing website/HTTP contract. */
-object CardRepository {
-    private val labels = mapOf("name" to "姓名", "student_id" to "学号", "class_name" to "班级", "phone" to "手机号")
-    suspend fun load(path: String): Document = CardClient.page(path).also { validatePage(path,it) }
-    suspend fun saveProfile(fields: Map<String,String>): Document = CardClient.page("/me",fields).also {
-        validatePage("/me",it)
-        check(it.select(".notice").any { node -> node.text().contains("已保存") }) { "服务端未确认保存，请刷新查看" }
-    }
-    suspend fun claim(path: String, fields: Map<String,String>): Document = CardClient.page(path,fields).also {
-        validatePage(path,it)
-        claimError(it)?.let { message -> throw IllegalStateException(message) }
-    }
-    fun validatePage(path: String, doc: Document) {
-        val supported = when {
-            path == "/me" || path.startsWith("/members/") -> doc.selectFirst(".card.full") != null
-            path == "/members" -> doc.selectFirst("main ul") != null
-            path == "/e" -> doc.selectFirst("main h1")?.text() == "活动"
-            path.startsWith("/e/") -> doc.selectFirst(".info h1") != null && doc.selectFirst(".pass-card") != null
-            else -> false
+internal class CardRepository(
+    private val cache: DiskCache,
+    private val activeSession: suspend () -> String?,
+    private val requestPage: suspend (String, Map<String, String>?) -> Document,
+    private val now: () -> Long = System::currentTimeMillis
+) {
+    private val mutex = Mutex()
+    private var snapshot: PageSnapshot? = null
+
+    suspend fun load(
+        path: String,
+        forceRefresh: Boolean = false,
+        onCached: (Document) -> Unit = {}
+    ): CardPage = withSession { session ->
+        val livePass = path.startsWith("/e/")
+        val entry = if (livePass) null else snapshot?.pages?.get(path)
+        val cached = entry?.takeIf { now() - it.savedAt in 0L..MAX_CACHE_AGE_MS }?.let {
+            withContext(Dispatchers.IO) {
+                runCatching { Jsoup.parse(it.html, it.url).also { doc -> validatePage(path, doc) } }.getOrNull()
+            }
         }
-        check(supported) { "Card 页面结构已变化，请更新 App 后重试" }
+        val ttl = if (path == "/e") EVENT_LIST_TTL_MS else CARD_TTL_MS
+        if (entry != null && cached != null && !forceRefresh && now() - entry.savedAt in 0L..ttl) {
+            return@withSession CardPage(cached)
+        }
+        cached?.let(onCached)
+        val document = try {
+            fetch(path)
+        } catch (failure: IOException) {
+            if (cached != null && activeSession() == session) {
+                return@withSession CardPage(cached, usingCachedCopy = true)
+            }
+            throw failure
+        }
+        if (!livePass) rememberPage(session, path, document)
+        CardPage(document)
     }
-    fun claimFields(doc: Document): List<CardClaimField> = doc.select("form.claim input[name]").map { input ->
-        val name=input.attr("name")
-        val hidden=input.attr("type")=="hidden"
-        check(hidden || name in labels) { "活动增加了未支持的报名字段，请在官方网页领取" }
-        CardClaimField(name,labels[name] ?: name,input.`val`(),input.hasAttr("required"),input.attr("maxlength").toIntOrNull()?.coerceIn(1,200) ?: 200,hidden)
+
+    suspend fun saveProfile(fields: Map<String, String>, uploadMedia: suspend () -> Unit): Document =
+        withSession { session ->
+            invalidate { it == "/me" || it == "/members" || it.startsWith("/members/") }
+            val saved = fetch("/me", fields)
+            check(saved.select(".notice").any { it.text().contains("已保存") }) { "服务端未确认保存，请刷新查看" }
+            uploadMedia()
+            fetch("/me").also { rememberPage(session, "/me", it) }
+        }
+
+    suspend fun claim(path: String, fields: Map<String, String>): Document = withSession {
+        invalidate { it == "/e" }
+        fetch(path, fields).also { doc ->
+            claimError(doc)?.let { throw IllegalStateException(it) }
+        }
     }
-    fun claimError(doc: Document): String? {
-        doc.selectFirst("form.claim .error")?.text()?.takeIf { it.isNotBlank() }?.let {return it}
-        val state=doc.selectFirst(".pass-card.full")?.attr("data-state")
-        return if (state in listOf("valid","redeemed","expired")) null
-            else doc.selectFirst(".act .notice")?.text()?.takeIf {it.isNotBlank()} ?: "活动券尚未领取成功，请检查信息或名额后重试"
+
+    private suspend fun fetch(path: String, fields: Map<String, String>? = null): Document =
+        requestPage(path, fields).also { validatePage(path, it) }
+
+    private suspend fun <T> withSession(block: suspend (String?) -> T): T = mutex.withLock {
+        val session = activeSession()
+        if (snapshot == null) {
+            snapshot = withContext(Dispatchers.IO) {
+                cache.readStale(CACHE_KEY, PageSnapshot.serializer()) ?: PageSnapshot(null)
+            }
+        }
+        if (snapshot?.session != session) store(PageSnapshot(session))
+        try {
+            block(session)
+        } catch (failure: CardAuthorizationException) {
+            store(PageSnapshot(session))
+            throw failure
+        }
+    }
+
+    private suspend fun rememberPage(session: String?, path: String, doc: Document) {
+        if (session == null || activeSession() != session) return
+        if (doc.selectFirst("[data-ticket], form.claim") != null) {
+            invalidate { it == path }
+            return
+        }
+        val savedAt = now()
+        val page = withContext(Dispatchers.IO) {
+            doc.outputSettings().prettyPrint(false)
+            CachedPage(doc.outerHtml(), doc.location(), savedAt)
+        }
+        val recent = (checkNotNull(snapshot).pages + (path to page)).entries
+            .filter { savedAt - it.value.savedAt in 0L..MAX_CACHE_AGE_MS }
+            .sortedByDescending { it.value.savedAt }
+            .take(MAX_PAGES)
+            .associate { it.toPair() }
+        store(PageSnapshot(session, recent))
+    }
+
+    private suspend fun invalidate(matches: (String) -> Boolean) {
+        val current = checkNotNull(snapshot)
+        val remaining = current.pages.filterKeys { !matches(it) }
+        if (remaining.size != current.pages.size) {
+            store(current.copy(pages = remaining))
+        }
+    }
+
+    private suspend fun store(value: PageSnapshot) {
+        snapshot = value
+        withContext(Dispatchers.IO) {
+            if (value.pages.isEmpty()) cache.remove(CACHE_KEY)
+            else cache.write(CACHE_KEY, PageSnapshot.serializer(), value)
+        }
+    }
+
+    @Serializable
+    private data class PageSnapshot(val session: String?, val pages: Map<String, CachedPage> = emptyMap())
+
+    @Serializable
+    private data class CachedPage(val html: String, val url: String, val savedAt: Long)
+
+    companion object {
+        private const val CACHE_KEY = "card-pages-v1"
+        private const val EVENT_LIST_TTL_MS = 60_000L
+        private const val CARD_TTL_MS = 5 * 60_000L
+        private const val MAX_CACHE_AGE_MS = 7 * 24 * 60 * 60_000L
+        private const val MAX_PAGES = 24
+        @Volatile private var instance: CardRepository? = null
+
+        fun getInstance(context: Context): CardRepository = instance ?: synchronized(this) {
+            instance ?: CardRepository(
+                DiskCache(File(context.applicationContext.cacheDir, "card-pages")),
+                CardClient::cacheSession,
+                CardClient::page
+            ).also { instance = it }
+        }
+
+        private val labels = mapOf("name" to "姓名", "student_id" to "学号", "class_name" to "班级", "phone" to "手机号")
+        fun validatePage(path: String, doc: Document) {
+            val supported = when {
+                path == "/me" || path.startsWith("/members/") -> doc.selectFirst(".card.full") != null
+                path == "/members" -> doc.selectFirst("main ul") != null
+                path == "/e" -> doc.selectFirst("main h1")?.text() == "活动"
+                path.startsWith("/e/") -> doc.selectFirst(".info h1") != null && doc.selectFirst(".pass-card") != null
+                else -> false
+            }
+            check(supported) { "Card 页面结构已变化，请更新 App 后重试" }
+        }
+
+        fun claimFields(doc: Document): List<CardClaimField> = doc.select("form.claim input[name]").map { input ->
+            val name = input.attr("name")
+            val hidden = input.attr("type") == "hidden"
+            check(hidden || name in labels) { "活动增加了未支持的报名字段，请在官方网页领取" }
+            CardClaimField(name, labels[name] ?: name, input.`val`(), input.hasAttr("required"), input.attr("maxlength").toIntOrNull()?.coerceIn(1, 200) ?: 200, hidden)
+        }
+
+        fun claimError(doc: Document): String? {
+            doc.selectFirst("form.claim .error")?.text()?.takeIf { it.isNotBlank() }?.let { return it }
+            val state = doc.selectFirst(".pass-card.full")?.attr("data-state")
+            return if (state in listOf("valid", "redeemed", "expired")) null
+                else doc.selectFirst(".act .notice")?.text()?.takeIf { it.isNotBlank() } ?: "活动券尚未领取成功，请检查信息或名额后重试"
+        }
     }
 }

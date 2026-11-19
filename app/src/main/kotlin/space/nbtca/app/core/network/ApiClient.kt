@@ -110,7 +110,7 @@ class ApiClient(
         calendarRepository.getAssociationCalendar()
 
     /** 校历：当前教学周与总周数（用于课表按周翻页）。 */
-    suspend fun getSchoolWeek(): Pair<Int, Int>? = calendarRepository.getSchoolWeek()
+    suspend fun getSchoolWeek() = calendarRepository.getSchoolWeek()
 
     suspend fun getServiceStatus(): ServiceStatus = statusRepository.get()
 

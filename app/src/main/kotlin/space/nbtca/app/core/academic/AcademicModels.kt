@@ -25,6 +25,12 @@ data class TimetableCourse(
 }
 
 @Serializable
+data class TimetablePeriod(val start: String, val end: String)
+
+@Serializable
+data class TimetableDay(val week: Int, val weekday: Int, val date: String)
+
+@Serializable
 data class ExamItem(
     val courseName: String = "",
     val examName: String = "",
@@ -53,5 +59,7 @@ data class AcademicSnapshot(
     val timetable: List<TimetableCourse> = emptyList(),
     val exams: List<ExamItem> = emptyList(),
     val grades: List<GradeItem> = emptyList(),
-    val updatedAt: Long = 0L
+    val updatedAt: Long = 0L,
+    val timetablePeriods: Map<Int, TimetablePeriod> = emptyMap(),
+    val timetableDays: List<TimetableDay> = emptyList()
 )

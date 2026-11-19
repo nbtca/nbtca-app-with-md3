@@ -158,17 +158,24 @@ object AcademicClient {
         val year = years.firstOrNull { it.third } ?: years.first()
         val semester = semesters.firstOrNull { it.third } ?: semesters.first()
 
-        val timetable = fetchTimetable(http, year.first, semester.first)
+        val timetableRaw = execute(http, timetableRequest(TT_DATA, year.first, semester.first))
+        val periodResponse = runCatching {
+            val periodClient = http.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
+            execute(periodClient, timetableRequest(TIMETABLE_PERIODS_PATH, year.first, semester.first))
+        }.getOrNull()
+        val metadata = TimetableMetadata(timetableRaw, periodResponse)
         val exams = fetchRecords(http, EXAM_INDEX, EXAM_CODE, EXAM_INDEX, year.first, semester.first, "kssj", ::parseExam)
         val grades = fetchRecords(http, GRADE_INDEX, GRADE_CODE, GRADE_QUERY, year.first, semester.first, "kch", ::parseGrade)
 
         val snapshot = AcademicSnapshot(
             studentId = store.studentId,
             termLabel = "${year.second} · ${semester.second}",
-            timetable = timetable,
+            timetable = parseTimetableRaw(timetableRaw),
             exams = exams,
             grades = grades,
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            timetablePeriods = metadata.periods,
+            timetableDays = metadata.days
         )
         store.saveSnapshot(snapshot)
         return snapshot
@@ -371,17 +378,16 @@ object AcademicClient {
     fun parseGradeRows(rows: JsonArray): List<GradeItem> =
         rows.mapNotNull { (it as? JsonObject)?.let(::parseGrade) }
 
-    private fun fetchTimetable(http: OkHttpClient, xnm: String, xqm: String): List<TimetableCourse> {
+    private fun timetableRequest(path: String, xnm: String, xqm: String): Request {
         val form = FormBody.Builder().add("xnm", xnm).add("xqm", xqm).build()
-        val request = Request.Builder()
-            .url("$JWXT_BASE$TT_DATA")
+        return Request.Builder()
+            .url("$JWXT_BASE$path")
             .header("User-Agent", UA)
             .header("Accept", "application/json, text/javascript, */*; q=0.01")
             .header("X-Requested-With", "XMLHttpRequest")
             .header("Referer", "$JWXT_BASE$TT_INDEX")
             .post(form)
             .build()
-        return parseTimetableBody(execute(http, request))
     }
 
     private fun parseTimetableBody(body: String): List<TimetableCourse> {

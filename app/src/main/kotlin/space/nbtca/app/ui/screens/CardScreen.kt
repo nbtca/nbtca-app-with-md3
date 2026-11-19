@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import space.nbtca.app.core.card.MemberCardData
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -20,6 +21,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Document
+import space.nbtca.app.core.card.CardAuthorizationException
 import space.nbtca.app.core.card.CardRepository
 import space.nbtca.app.core.card.CardLoginRequired
 import space.nbtca.app.ui.components.ContentCard
@@ -33,26 +35,64 @@ fun CardScreen() {
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<Exception?>(null) }
     var refresh by remember { mutableIntStateOf(0) }
+    var forceRefresh by remember { mutableStateOf(false) }
+    var usingCachedCopy by remember { mutableStateOf(false) }
     var login by remember { mutableStateOf(false) }
     var submitting by remember { mutableStateOf(false) }
     var notice by remember { mutableStateOf<String?>(null) }
     var editing by remember { mutableStateOf(false) }
     var menu by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val repository = remember(context) { CardRepository.getInstance(context) }
     val imageLoader = rememberCardImageLoader()
     val config = LocalConfiguration.current
     val cardWidth = minOf(config.screenWidthDp - 64f, (config.screenHeightDp - 300f) / 1.4f).coerceAtLeast(180f).dp
     val scope = rememberCoroutineScope()
-    fun navigate(next: String) { path = next; doc = null; error = null; notice = null }
+    fun navigate(next: String) {
+        if (submitting) return
+        path = next
+        forceRefresh = false
+        usingCachedCopy = false
+        doc = null
+        error = null
+        notice = null
+    }
+    fun refreshPage() {
+        forceRefresh = true
+        refresh++
+    }
+    fun showLogin() {
+        login = true
+        doc = null
+        error = null
+        notice = null
+        usingCachedCopy = false
+    }
     if (login) {
-        CardLoginScreen(onClose = { login = false }, onLoggedIn = { login = false; refresh++ })
+        CardLoginScreen(onClose = { login = false }, onLoggedIn = { login = false; refreshPage() })
         return
     }
     LaunchedEffect(path, refresh) {
-        loading = true; error = null; doc = null
-        try { doc = CardRepository.load(path) }
-        catch (cancelled: CancellationException) { throw cancelled }
-        catch (failure: Exception) { error = failure }
-        finally { loading = false }
+        val bypassCache = forceRefresh
+        forceRefresh = false
+        loading = true
+        error = null
+        if (path.startsWith("/e/")) doc = null
+        try {
+            val page = repository.load(path, forceRefresh = bypassCache) { cached ->
+                if (doc == null) doc = cached
+            }
+            doc = page.document
+            usingCachedCopy = page.usingCachedCopy
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (failure: Exception) {
+            doc = null
+            usingCachedCopy = false
+            error = failure
+        } finally {
+            loading = false
+        }
     }
     // A displayed pass is re-read so redeemed/expired codes are not kept on screen.
     LaunchedEffect(path, doc) {
@@ -67,20 +107,28 @@ fun CardScreen() {
     fun navigateUp() = navigate(if (path.startsWith("/members/")) "/members" else "/e")
     BackHandler(detail, onBack = ::navigateUp)
     fun post(fields: Map<String,String>) {
-        if (submitting) return
+        if (submitting || loading) return
         submitting = true
         scope.launch {
             try {
-                doc = CardRepository.claim(path, fields)
-                notice = if (path == "/me") "已保存" else "已更新活动券状态"
+                doc = repository.claim(path, fields)
+                notice = "已更新活动券状态"
                 error = null
             } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { error = failure }
+            catch (failure: Exception) {
+                if (failure is CardAuthorizationException) doc = null
+                error = failure
+            }
             finally { submitting = false }
         }
     }
     if (editing && doc?.selectFirst(".card.full") != null) {
-        CardEditScreen(doc!!, imageLoader, onBack = { editing = false }, onSaved = { doc = it; editing = false; notice = "卡片已保存" })
+        CardEditScreen(doc!!, imageLoader, repository, onBack = { editing = false }, onSaved = {
+            doc = it
+            usingCachedCopy = false
+            editing = false
+            notice = "卡片已保存"
+        })
         return
     }
     Scaffold(topBar = {
@@ -95,17 +143,17 @@ fun CardScreen() {
                     }
                 },
                 actions = {
-                    IconButton(onClick = { refresh++ }, enabled = !loading && !submitting) {
+                    IconButton(onClick = ::refreshPage, enabled = !loading && !submitting) {
                         Icon(Icons.Default.Refresh, "刷新 Card")
                     }
                     Box {
-                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Card 菜单") }
+                        IconButton(onClick = { menu = true }, enabled = !submitting) { Icon(Icons.Default.MoreVert, "Card 菜单") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             DropdownMenuItem(
                                 text = { Text("重新授权") },
                                 onClick = {
                                     menu = false
-                                    login = true
+                                    showLogin()
                                 }
                             )
                         }
@@ -127,7 +175,7 @@ fun CardScreen() {
         }
     }) { padding ->
         LazyColumn(Modifier.fillMaxSize().padding(padding), contentPadding = PaddingValues(bottom = 24.dp)) {
-            if (loading) item {
+            if (loading && doc == null) item {
                 Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
                     LoadingIndicator()
                 }
@@ -147,11 +195,15 @@ fun CardScreen() {
                             style = MaterialTheme.typography.bodyMedium
                         )
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Button(onClick = { login = true }) { Text("登录 Card") }
-                            TextButton(onClick = { refresh++ }) { Text("重试") }
+                            Button(onClick = ::showLogin) { Text("登录 Card") }
+                            TextButton(onClick = ::refreshPage) { Text("重试") }
                         }
                     }
                 }
+            }
+            if (usingCachedCopy) item {
+                Text("暂时无法更新，正在显示上次加载的内容。", Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                    style = MaterialTheme.typography.bodySmall, color = AppThemeColors.textSecondary)
             }
             notice?.let { item { Text(it, Modifier.padding(horizontal = 20.dp), color = MaterialTheme.colorScheme.primary) } }
             val current = doc
@@ -191,7 +243,7 @@ fun CardScreen() {
                             MemberCardVisual(MemberCardData.parse(card), imageLoader, Modifier.width(cardWidth))
                             Text("点击翻面 · 轻拖查看光泽", Modifier.padding(top = 20.dp), style = MaterialTheme.typography.bodySmall, color = AppThemeColors.textSecondary)
                             if (path == "/me") {
-                                Button(onClick = { editing = true }, modifier = Modifier.padding(top = 12.dp)) {
+                                Button(onClick = { editing = true }, enabled = !loading, modifier = Modifier.padding(top = 12.dp)) {
                                     Text("装扮我的卡片")
                                 }
                             }
@@ -222,9 +274,9 @@ fun CardScreen() {
                                     label={Text(field.label + if(field.required) " *" else "")},singleLine=true,
                                     modifier=Modifier.fillMaxWidth().padding(top=8.dp),enabled=!submitting)
                             }
-                            Button(onClick = { post(values.toMap()) }, enabled = !submitting && parsed.isSuccess && claimFields.all { !it.required || !values[it.name].isNullOrBlank() }) { Text(if (submitting) "正在领取…" else "领取活动券") }
+                            Button(onClick = { post(values.toMap()) }, enabled = !submitting && !loading && parsed.isSuccess && claimFields.all { !it.required || !values[it.name].isNullOrBlank() }) { Text(if (submitting) "正在领取…" else "领取活动券") }
                         } else if (current.selectFirst(".act a[href^=/login]") != null) {
-                            Button(onClick = { login = true }) { Text("登录后领取") }
+                            Button(onClick = ::showLogin) { Text("登录后领取") }
                         }
                     } }
                 }

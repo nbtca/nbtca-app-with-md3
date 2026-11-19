@@ -4,7 +4,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
 import okhttp3.OkHttpClient
 import space.nbtca.app.core.model.AssociationCalendar
 import space.nbtca.app.core.model.AssociationEvent
@@ -14,15 +13,10 @@ import space.nbtca.app.core.network.NbtcaHttp
 import space.nbtca.app.core.parse.IcsEvent
 import space.nbtca.app.core.parse.IcsParser
 import space.nbtca.app.core.parse.SchoolCalendar
+import space.nbtca.app.core.parse.SchoolWeek
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
-
-@Serializable
-private data class SchoolWeekSnapshot(
-    val current: Int = 1,
-    val total: Int = 20
-)
 
 /**
  * 校历与协会活动直连 ical.nbtca.space，替代旧 BFF 的 /tools/calendar 与
@@ -36,7 +30,7 @@ class CalendarRepository(
     private val mutex = Mutex()
 
     @Volatile
-    private var weekMemory: SchoolWeekSnapshot? = null
+    private var weekMemory: SchoolWeek? = null
 
     @Volatile
     private var weekMemoryAt = 0L
@@ -47,33 +41,32 @@ class CalendarRepository(
     @Volatile
     private var eventsMemoryAt = 0L
 
-    suspend fun getSchoolWeek(): Pair<Int, Int>? = withContext(Dispatchers.IO) {
+    suspend fun getSchoolWeek(): SchoolWeek? = withContext(Dispatchers.IO) {
         mutex.withLock {
             val now = System.currentTimeMillis()
             weekMemory?.let {
-                if (now - weekMemoryAt < CALENDAR_TTL_MS) return@withLock it.current to it.total
+                if (now - weekMemoryAt < CALENDAR_TTL_MS) return@withLock it
             }
-            cache.read(WEEK_CACHE_KEY, SchoolWeekSnapshot.serializer(), CALENDAR_TTL_MS)?.let { cached ->
+            cache.read(WEEK_CACHE_KEY, SchoolWeek.serializer(), CALENDAR_TTL_MS)?.takeIf { it.termMondays != null }?.let { cached ->
                 weekMemory = cached
                 weekMemoryAt = now
-                return@withLock cached.current to cached.total
+                return@withLock cached
             }
 
             try {
                 val text = NbtcaHttp.getText(http, NbtcaEndpoints.SCHOOL_ICS, "text/calendar,*/*")
                 val events = IcsParser.parse(text)
                 val week = SchoolCalendar.currentWeek(events, ZonedDateTime.now(china))
-                val snapshot = SchoolWeekSnapshot(week.current, week.total)
-                cache.write(WEEK_CACHE_KEY, SchoolWeekSnapshot.serializer(), snapshot)
-                weekMemory = snapshot
+                cache.write(WEEK_CACHE_KEY, SchoolWeek.serializer(), week)
+                weekMemory = week
                 weekMemoryAt = now
-                snapshot.current to snapshot.total
+                week
             } catch (_: Exception) {
-                val stale = cache.readStale(WEEK_CACHE_KEY, SchoolWeekSnapshot.serializer())
+                val stale = cache.readStale(WEEK_CACHE_KEY, SchoolWeek.serializer())
                 if (stale != null) {
                     weekMemory = stale
                     weekMemoryAt = 0L
-                    stale.current to stale.total
+                    stale
                 } else {
                     null
                 }

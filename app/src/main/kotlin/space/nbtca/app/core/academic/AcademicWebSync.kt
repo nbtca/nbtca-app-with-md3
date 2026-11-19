@@ -95,12 +95,17 @@ object AcademicWebSync {
           };
           const XNM = '$xnm', XQM = '$xqm';
           (async () => {
-            const ttRes = await H('/jwglxt/kbcx/xskbcx_cxXsgrkb.html', {
+            const timetableRequest = {
               method: 'POST',
               headers: { 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest' },
               body: enc({ xnm: XNM, xqm: XQM })
-            });
+            };
+            const ttRes = await H('/jwglxt/kbcx/xskbcx_cxXsgrkb.html', timetableRequest);
             const tt = await ttRes.text();
+            const periodsAbort = new AbortController();
+            const periodsTimeout = setTimeout(() => periodsAbort.abort(), 5000);
+            const periods = H('$TIMETABLE_PERIODS_PATH', Object.assign({}, timetableRequest, { signal: periodsAbort.signal }))
+              .then(res => res.text()).catch(() => null).finally(() => clearTimeout(periodsTimeout));
             const pages = async (path, code, sort) => {
               let out = [], page = 1, total = 1;
               while (page <= total && page <= 5) {
@@ -122,7 +127,7 @@ object AcademicWebSync {
             };
             const exams = await pages('/jwglxt/kwgl/kscx_cxXsksxxIndex.html', 'N358105', 'kssj');
             const grades = await pages('/jwglxt/cjcx/cjcx_cxXsgrcj.html', 'N305005', 'kch');
-            emit(JSON.stringify({ tt: tt, exams: exams, grades: grades }));
+            emit(JSON.stringify({ tt: tt, periods: await periods, exams: exams, grades: grades }));
           })().catch(e => emit(JSON.stringify({ error: String(e) })));
         })();
     """.trimIndent()
@@ -197,13 +202,16 @@ object AcademicWebSync {
         }
         val exams = root["exams"] as? JsonArray ?: throw AcademicException("教务未返回考试数据")
         val grades = root["grades"] as? JsonArray ?: throw AcademicException("教务未返回成绩数据")
+        val metadata = TimetableMetadata(timetableRaw, (root["periods"] as? JsonPrimitive)?.contentOrNull)
         val snapshot = AcademicSnapshot(
             studentId = store.studentId,
             termLabel = termLabel,
             timetable = AcademicClient.parseTimetableRaw(timetableRaw),
             exams = AcademicClient.parseExamRows(exams),
             grades = AcademicClient.parseGradeRows(grades),
-            updatedAt = System.currentTimeMillis()
+            updatedAt = System.currentTimeMillis(),
+            timetablePeriods = metadata.periods,
+            timetableDays = metadata.days
         )
         store.saveSnapshot(snapshot)
         return snapshot

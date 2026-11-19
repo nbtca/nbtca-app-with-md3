@@ -10,12 +10,14 @@ import java.security.MessageDigest
  * 极简的磁盘 JSON 缓存，用来在断网时显示上一次成功的数据。
  * 文件名使用 key 的 SHA-256，避免文章 id 里的 "/" 变成目录。
  */
-class DiskCache(context: Context) {
+class DiskCache(directory: File) {
+    constructor(context: Context) : this(File(context.applicationContext.filesDir, "nbtca-cache"))
+
     private val json = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
     }
-    private val root = File(context.applicationContext.filesDir, "nbtca-cache").apply { mkdirs() }
+    private val root = directory.apply { mkdirs() }
 
     fun <T> read(key: String, serializer: KSerializer<T>, maxAgeMs: Long): T? {
         val file = fileFor(key)
