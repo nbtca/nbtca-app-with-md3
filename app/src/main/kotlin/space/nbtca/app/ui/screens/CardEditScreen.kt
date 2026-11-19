@@ -39,6 +39,9 @@ internal fun CardEditScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val original=remember(doc) { MemberCardData.parse(doc.selectFirst(".card.full")!!) }
+    val huePresets = remember(doc) {
+        CardRepository.profileSwatchHues(doc).ifEmpty { listOf(212, 248, 280, 320, 350, 18, 42, 140, 172, 196) }
+    }
     val fields=remember { mutableStateMapOf<String,String>().apply {
         listOf("word","motto","section","role","joined","github","hue").forEach { put(it,doc.selectFirst("input[name=$it]")?.`val`().orEmpty()) }
     } }
@@ -102,7 +105,7 @@ internal fun CardEditScreen(
             item {ContentCard {
                 Text("主色调",fontWeight=FontWeight.Bold)
                 Row(Modifier.fillMaxWidth().padding(top=16.dp),horizontalArrangement=Arrangement.SpaceBetween) {
-                    listOf(212,248,280,320,350,18,42,140,172,196).forEach { hue ->
+                    huePresets.forEach { hue ->
                         Box(Modifier.size(23.dp).background(Color.hsv(hue.toFloat(),.7f,.85f),CircleShape)
                             .border(if(preview.hue.toInt()==hue) 2.dp else 0.dp,MaterialTheme.colorScheme.primary,CircleShape)
                             .clickable(enabled=!busy){fields["hue"]=hue.toString()})

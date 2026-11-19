@@ -22,6 +22,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import org.jsoup.nodes.Element
+import space.nbtca.app.core.card.CardRepository
 
 @Composable
 private fun VideoWord(word: String, modifier: Modifier, animate: Boolean) {
@@ -51,7 +52,7 @@ private fun VideoWord(word: String, modifier: Modifier, animate: Boolean) {
 @Composable
 internal fun TicketVisual(element: Element?, modifier: Modifier=Modifier, preview: Boolean=false, compact: Boolean=false) {
     val state=element?.attr("data-state").orEmpty()
-    val code=element?.selectFirst("[data-ticket][data-check-in=open] svg.qr")
+    val code=element?.let(CardRepository::checkInCode)
     var reveal by remember(element) { mutableStateOf(false) }
     val shape=remember { GenericShape { size,_ ->
         val base=Path().apply {addRoundRect(RoundRect(Rect(Offset.Zero,size),CornerRadius(size.width*.055f)))}
@@ -102,7 +103,7 @@ internal fun TicketVisual(element: Element?, modifier: Modifier=Modifier, previe
                     code!=null && reveal -> Row(verticalAlignment=Alignment.CenterVertically) {
                         val svg=code.clone().attr("xmlns","http://www.w3.org/2000/svg").attr("width","256").attr("height","256")
                         coil.compose.AsyncImage(svg.outerHtml().toByteArray(),"入场二维码",modifier=Modifier.size((w*.29f).dp).background(Color.White).padding(8.dp))
-                        Text(element.selectFirst(".serial")?.text().orEmpty(),fontSize=(w*.03f).sp,color=Color(0xFF17232B),modifier=Modifier.padding(start=12.dp))
+                        Text(code.parent()?.selectFirst(".serial span")?.text().orEmpty(),fontSize=(w*.03f).sp,color=Color(0xFF17232B),modifier=Modifier.padding(start=12.dp))
                     }
                     else -> Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Brush.linearGradient(listOf(Color(0xFFE2F4F6),Color(0xFFF0E5F8))))
                         .clickable(enabled=code!=null){reveal=true}.padding(12.dp),contentAlignment=Alignment.Center) {

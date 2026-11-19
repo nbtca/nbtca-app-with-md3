@@ -8,6 +8,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import org.jsoup.Jsoup
 import org.jsoup.nodes.Document
+import org.jsoup.nodes.Element
 import space.nbtca.app.core.data.DiskCache
 import java.io.File
 import java.io.IOException
@@ -168,6 +169,16 @@ internal class CardRepository(
                 else -> false
             }
             check(supported) { "Card 页面结构已变化，请更新 App 后重试" }
+        }
+
+        fun profileSwatchHues(doc: Document): List<Int> =
+            doc.select("form.form[method=post] .swatches button.swatch[data-hue]")
+                .mapNotNull { it.attr("data-hue").toIntOrNull()?.takeIf { hue -> hue in 0..360 } }
+                .distinct()
+
+        fun checkInCode(card: Element): Element? {
+            if (!card.hasClass("full") || card.attr("data-state") != "valid") return null
+            return card.selectFirst(".ticket[data-ticket][data-check-in=open] > .under > svg.qr")
         }
 
         fun claimFields(doc: Document): List<CardClaimField> = doc.select("form.claim input[name]").map { input ->
