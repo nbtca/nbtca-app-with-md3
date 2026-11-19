@@ -265,11 +265,19 @@ fun AcademicSyncScreen(
                 if (view == null) return@LaunchedEffect
                 val batch = selectedTerms.toList()
                 val failures = mutableListOf<Pair<String, String>>()
+                var batchStudentId: String? = null
                 for ((index, term) in batch.withIndex()) {
                     status = "正在同步 ${index + 1}/${batch.size} · ${term.label}"
                     try {
                         val raw = fetchTerm(view, term)
-                        withContext(Dispatchers.IO) { AcademicWebSync.parse(store, raw, term) }
+                        val snapshot = withContext(Dispatchers.IO) { AcademicWebSync.parse(raw, term) }
+                        if (batchStudentId != null && snapshot.studentId != batchStudentId) {
+                            throw AcademicException("教务账号在同步期间变更，请重新同步")
+                        }
+                        val cookies = AcademicWebSync.sessionCookies()
+                            ?: throw AcademicException("教务会话已失效，请重新登录")
+                        store.saveSnapshot(snapshot, cookies)
+                        batchStudentId = snapshot.studentId
                     } catch (cancelled: CancellationException) {
                         throw cancelled
                     } catch (failure: Exception) {
@@ -388,7 +396,7 @@ private suspend fun fetchTerm(view: WebView, term: AcademicTerm): String {
     } ?: throw AcademicException("读取学期数据超时")
 }
 
-private suspend fun evaluateJsValue(view: WebView, script: String): String? =
+internal suspend fun evaluateJsValue(view: WebView, script: String): String? =
     suspendCancellableCoroutine { continuation ->
         try {
             view.evaluateJavascript(script) { value ->

@@ -40,6 +40,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,13 +57,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeoutOrNull
 import space.nbtca.app.core.academic.AcademicStore
 import space.nbtca.app.core.academic.AcademicWebSync
 import space.nbtca.app.ui.theme.AppColors
-
-/** 学校官方教务 WebVPN 入口。 */
-private const val CAMPUS_ENTRY = "https://webvpn.nbt.edu.cn/"
-private const val AUTH_ORIGIN = "https://authserver-443.webvpn.nbt.edu.cn"
 
 private enum class LoginStep { Portal, SingleSignOn, Menu, Timetable }
 
@@ -99,32 +98,6 @@ fun CampusLoginScreen(
         }
     }
 
-    fun harvestCookies(): Boolean {
-        val manager = CookieManager.getInstance()
-        val timetableCookies = manager.getCookie(AcademicWebSync.TIMETABLE_URL)
-        if (timetableCookies.isNullOrBlank()) return false
-        val cookieHeaders = listOf(
-            manager.getCookie(AUTH_ORIGIN),
-            manager.getCookie(CAMPUS_ENTRY),
-            timetableCookies
-        )
-        val pairs = linkedMapOf<String, String>()
-        cookieHeaders.forEach { cookies ->
-            cookies?.split(";")?.forEach { part ->
-                val index = part.indexOf('=')
-                if (index > 0) {
-                    val name = part.substring(0, index).trim()
-                    val value = part.substring(index + 1).trim()
-                    if (name.isNotEmpty() && value.isNotEmpty()) pairs[name] = value
-                }
-            }
-        }
-        if (pairs.isEmpty()) return false
-        store.cookies = pairs.entries.joinToString("; ") { "${it.key}=${it.value}" }
-        manager.flush()
-        return true
-    }
-
     fun goTo(view: WebView, next: LoginStep, url: String) {
         pageVersion++
         step = next
@@ -136,7 +109,7 @@ fun CampusLoginScreen(
     fun onLoginPageReady(view: WebView, url: String) {
         val uri = Uri.parse(url)
         val origin = "${uri.scheme}://${uri.encodedAuthority}"
-        if (origin == CAMPUS_ENTRY.removeSuffix("/")) {
+        if (origin == AcademicWebSync.PORTAL_URL.removeSuffix("/")) {
             checkPage(view, AcademicWebSync.PORTAL_READY_SCRIPT) { ready ->
                 if (ready) {
                     if (step == LoginStep.Portal) {
@@ -144,13 +117,15 @@ fun CampusLoginScreen(
                     } else {
                         loadError = "教务验证返回了学校门户，请重试"
                     }
+                } else if (step == LoginStep.Portal || uri.path in listOf("/login", "/users/sign_in")) {
+                    needsAuthInput = true
                 } else {
-                    needsAuthInput = step == LoginStep.Portal || uri.path == "/login" || uri.path == "/users/sign_in"
+                    loadError = "教务验证跳回了学校门户，请重试"
                 }
             }
             return
         }
-        if (origin == AUTH_ORIGIN || origin == "https://authserver.nbt.edu.cn") {
+        if (origin == AcademicWebSync.AUTH_ORIGIN || origin == "https://authserver.nbt.edu.cn") {
             needsAuthInput = true
             return
         }
@@ -167,12 +142,8 @@ fun CampusLoginScreen(
                 }
             }
             LoginStep.Menu -> goTo(view, LoginStep.Timetable, AcademicWebSync.TIMETABLE_URL)
-            LoginStep.Timetable -> checkPage(view, AcademicWebSync.TIMETABLE_READY_SCRIPT) { ready ->
-                if (ready && harvestCookies()) {
-                    onLoggedIn()
-                } else {
-                    loadError = "未能读取到已登录课表页的学年和学期，请重新连接"
-                }
+            LoginStep.Timetable -> if (uri.encodedPath != AcademicWebSync.TIMETABLE_PATH) {
+                loadError = "教务验证未进入课表页，请重试"
             }
             LoginStep.Portal -> Unit
         }
@@ -184,6 +155,40 @@ fun CampusLoginScreen(
         needsAuthInput = false
         step = LoginStep.Portal
         reloadToken++
+    }
+
+    LaunchedEffect(reloadToken, showLoginProgress) {
+        if (!showLoginProgress) return@LaunchedEffect
+        delay(30_000)
+        if (loadError == null && !needsAuthInput) loadError = "连接教务系统超时，请重试"
+    }
+
+    LaunchedEffect(webView, pageVersion, step, isLoading, showLoginProgress) {
+        val view = webView ?: return@LaunchedEffect
+        val url = view.url ?: return@LaunchedEffect
+        if (step != LoginStep.Timetable || isLoading || !showLoginProgress ||
+            Uri.parse(url).encodedPath != AcademicWebSync.TIMETABLE_PATH
+        ) return@LaunchedEffect
+
+        val version = pageVersion
+        val result = withTimeoutOrNull(12_000) {
+            var studentId = evaluateJsValue(view, AcademicWebSync.TIMETABLE_IDENTITY_SCRIPT)
+            while (studentId == null || studentId == "null") {
+                delay(300)
+                studentId = evaluateJsValue(view, AcademicWebSync.TIMETABLE_IDENTITY_SCRIPT)
+            }
+            studentId
+        }
+        if (view !== webView || version != pageVersion || view.url != url || loadError != null) return@LaunchedEffect
+        val studentId = result?.let(AcademicWebSync::decodeStudentId).orEmpty()
+        val cookies = AcademicWebSync.sessionCookies()
+        if (studentId.isEmpty() || cookies == null) {
+            loadError = "未能确认当前教务学号，请重试"
+            return@LaunchedEffect
+        }
+        store.saveWebSession(studentId, cookies)
+        CookieManager.getInstance().flush()
+        onLoggedIn()
     }
 
     BackHandler { onBack() }
@@ -246,7 +251,7 @@ fun CampusLoginScreen(
                                             onLoginPageReady(view, url)
                                         }
                                     }
-                                    loadUrl(CAMPUS_ENTRY)
+                                    loadUrl(AcademicWebSync.PORTAL_URL)
                                 }
                             },
                             update = { view -> view.visibility = if (showLoginProgress) View.INVISIBLE else View.VISIBLE },

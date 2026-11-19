@@ -88,6 +88,26 @@ class CardPageCacheTest {
         assertNull(CardCacheSession.fromCookies("preference=new"))
     }
 
+    @Test fun retainsLegacyPagesWhenMigrationCannotWriteAndRetriesOnRestart() = runBlocking {
+        val identity = CardCacheSession("alice", "legacy-alice")
+        val legacyDirectory = directory.newFolder()
+        val legacy = DiskCache(legacyDirectory)
+        session = identity.legacyKey
+        repository(cache = legacy).load("/me")
+        response = { _, _ -> throw IOException("offline") }
+
+        val blockedCache = DiskCache(directory.newFile())
+        val migration = repository(cache = blockedCache, identity = { identity }, legacy = legacy)
+        assertTrue(migration.load("/me", forceRefresh = true).usingCachedCopy)
+        assertTrue(legacyDirectory.listFiles().orEmpty().isNotEmpty())
+
+        val healthyCache = DiskCache(directory.newFolder())
+        val reopened = repository(cache = healthyCache, identity = { identity }, legacy = legacy)
+        assertTrue(reopened.load("/me", forceRefresh = true).usingCachedCopy)
+        assertTrue(legacyDirectory.listFiles().orEmpty().isEmpty())
+        assertTrue(repository(cache = healthyCache, identity = { identity }).load("/me", forceRefresh = true).usingCachedCopy)
+    }
+
     @Test fun reloadsProfileAfterUploadsAndInvalidatesMemberWall() = runBlocking {
         var updated = false
         response = { path, fields ->

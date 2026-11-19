@@ -1,6 +1,7 @@
 package space.nbtca.app.core.academic
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.net.Uri
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
@@ -26,14 +27,12 @@ import kotlin.coroutines.resume
  * 教务数据本地仓库：学号、密码（Keystore 加密）、课表/考试/成绩快照全部落盘，
  * 断网也能看。密码只用于自动重新登录教务系统。
  */
-class AcademicStore private constructor(context: Context) {
+class AcademicStore internal constructor(private val prefs: SharedPreferences) {
 
-    private val prefs = context.getSharedPreferences("academic_store", Context.MODE_PRIVATE)
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
 
-    var studentId: String
-        get() = prefs.getString(KEY_STUDENT_ID, "").orEmpty()
-        set(value) = prefs.edit().putString(KEY_STUDENT_ID, value.trim()).apply()
+    val studentId: String
+        get() = prefs.getString(KEY_VERIFIED_STUDENT_ID, "").orEmpty()
 
     var password: String
         get() = decrypt(prefs.getString(KEY_PASSWORD, null)).orEmpty()
@@ -49,10 +48,9 @@ class AcademicStore private constructor(context: Context) {
 
     @Synchronized
     fun loadSnapshots(): List<AcademicSnapshot> {
-        val snapshots = readSnapshots()
-        val owner = studentId.ifBlank { snapshots.firstOrNull()?.studentId.orEmpty() }
-        val otherAccountExists = snapshots.any { it.studentId.isNotBlank() && it.studentId != owner }
-        return snapshots.filter { it.studentId == owner || (it.studentId.isBlank() && !otherAccountExists) }
+        val owner = studentId
+        if (owner.isBlank()) return emptyList()
+        return readSnapshots().filter { it.studentId == owner }
     }
 
     private fun readSnapshots(): List<AcademicSnapshot> {
@@ -65,22 +63,38 @@ class AcademicStore private constructor(context: Context) {
     }
 
     @Synchronized
-    fun saveSnapshot(snapshot: AcademicSnapshot) {
-        val stored = readSnapshots()
-        val otherAccountExists = stored.any { it.studentId.isNotBlank() && it.studentId != snapshot.studentId }
-        val retained = stored.filterNot {
-            val sameAccount = it.studentId == snapshot.studentId || (it.studentId.isBlank() && !otherAccountExists)
-            sameAccount && it.matchesTerm(snapshot)
+    internal fun saveSnapshot(snapshot: AcademicSnapshot, sessionCookies: String) {
+        val retained = readSnapshots().filterNot {
+            it.studentId == snapshot.studentId && it.matchesTerm(snapshot)
         }
-        val editor = prefs.edit()
+        prefs.edit()
+            .putSession(snapshot.studentId, sessionCookies)
             .putString(KEY_SNAPSHOTS, json.encodeToString(listOf(snapshot) + retained))
             .remove(KEY_SNAPSHOT)
-        if (snapshot.studentId.isNotBlank()) editor.putString(KEY_STUDENT_ID, snapshot.studentId)
-        editor.apply()
+            .apply()
     }
 
+    @Synchronized
+    internal fun saveWebSession(studentId: String, sessionCookies: String) {
+        prefs.edit().putSession(studentId, sessionCookies).apply()
+    }
+
+    private fun SharedPreferences.Editor.putSession(studentId: String, sessionCookies: String): SharedPreferences.Editor {
+        require(studentId.isNotBlank() && sessionCookies.isNotBlank())
+        if (studentId != this@AcademicStore.studentId) remove(KEY_PASSWORD)
+        return putString(KEY_VERIFIED_STUDENT_ID, studentId)
+            .putString(KEY_COOKIES, sessionCookies)
+            .remove(KEY_STUDENT_ID)
+    }
+
+    @Synchronized
     fun clearCredentials() {
-        prefs.edit().remove(KEY_STUDENT_ID).remove(KEY_PASSWORD).remove(KEY_COOKIES).apply()
+        prefs.edit()
+            .remove(KEY_VERIFIED_STUDENT_ID)
+            .remove(KEY_STUDENT_ID)
+            .remove(KEY_PASSWORD)
+            .remove(KEY_COOKIES)
+            .apply()
     }
 
     suspend fun signOut() = withContext(NonCancellable + Dispatchers.Main) {
@@ -137,9 +151,8 @@ class AcademicStore private constructor(context: Context) {
 
     fun clearAll() = prefs.edit().clear().apply()
 
-    var cookies: String?
+    val cookies: String?
         get() = prefs.getString(KEY_COOKIES, null)
-        set(value) = prefs.edit().putString(KEY_COOKIES, value).apply()
 
     // ---------------- Keystore AES/GCM ----------------
 
@@ -183,6 +196,7 @@ class AcademicStore private constructor(context: Context) {
 
     companion object {
         private const val KEY_STUDENT_ID = "student_id"
+        private const val KEY_VERIFIED_STUDENT_ID = "verified_student_id"
         private const val KEY_PASSWORD = "password_cipher"
         private const val KEY_SNAPSHOT = "snapshot"
         private const val KEY_SNAPSHOTS = "term_snapshots"
@@ -194,7 +208,9 @@ class AcademicStore private constructor(context: Context) {
 
         fun getInstance(context: Context): AcademicStore =
             instance ?: synchronized(this) {
-                instance ?: AcademicStore(context.applicationContext).also { instance = it }
+                instance ?: AcademicStore(
+                    context.applicationContext.getSharedPreferences("academic_store", Context.MODE_PRIVATE)
+                ).also { instance = it }
             }
     }
 }

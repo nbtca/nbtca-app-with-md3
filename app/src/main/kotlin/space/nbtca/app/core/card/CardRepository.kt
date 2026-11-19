@@ -130,9 +130,12 @@ internal class CardRepository(
     private suspend fun store(value: PageSnapshot) {
         snapshot = value
         withContext(Dispatchers.IO) {
-            if (value.pages.isEmpty()) cache.remove(CACHE_KEY)
-            else cache.write(CACHE_KEY, PageSnapshot.serializer(), value)
-            legacyCache?.remove(CACHE_KEY)
+            if (value.pages.isEmpty()) {
+                legacyCache?.remove(CACHE_KEY)
+                cache.remove(CACHE_KEY)
+            } else if (cache.write(CACHE_KEY, PageSnapshot.serializer(), value)) {
+                legacyCache?.remove(CACHE_KEY)
+            }
         }
     }
 

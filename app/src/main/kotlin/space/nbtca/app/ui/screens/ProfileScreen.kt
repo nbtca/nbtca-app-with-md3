@@ -103,7 +103,9 @@ fun ProfileScreen(
     val updateScope = androidx.compose.runtime.rememberCoroutineScope()
     // 学号可能被外部修改，用状态跟踪以便对话框关闭后立即刷新展示
     var academicBound by remember { mutableStateOf(academicStore.studentId) }
-    var academicSession by remember { mutableStateOf(!academicStore.cookies.isNullOrBlank()) }
+    var academicSession by remember {
+        mutableStateOf(academicStore.studentId.isNotBlank() && !academicStore.cookies.isNullOrBlank())
+    }
     var showCampusLogin by remember { mutableStateOf(false) }
     var academicSigningOut by remember { mutableStateOf(false) }
     var academicSignOutFailed by remember { mutableStateOf(false) }
