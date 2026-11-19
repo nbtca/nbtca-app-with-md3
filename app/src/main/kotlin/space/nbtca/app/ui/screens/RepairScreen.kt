@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
+import androidx.compose.foundation.text.TextAutoSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Build
@@ -429,27 +431,37 @@ private fun OverviewTab(
                 color = colors.primaryContainer,
                 contentColor = colors.onPrimaryContainer
             ) {
-                Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(
+                    modifier = Modifier.padding(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalAlignment = Alignment.Top
+                ) {
                     Box(
-                        modifier = Modifier.size(56.dp)
+                        modifier = Modifier.size(40.dp)
                             .background(colors.primary, MaterialShapes.SoftBurst.toShape()),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
                             Icons.Default.Build,
                             contentDescription = null,
+                            modifier = Modifier.size(20.dp),
                             tint = colors.onPrimary
                         )
                     }
-                    Text("电脑义诊", style = MaterialTheme.typography.headlineMediumEmphasized)
-                    Text(
-                        "协会志愿者提供免费的电脑检修与配置服务。",
-                        style = MaterialTheme.typography.bodyMedium
-                    )
-                    androidx.compose.material3.Button(onClick = onBook) {
-                        Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("预约维修", style = MaterialTheme.typography.labelLargeEmphasized)
+                    Column(
+                        modifier = Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        Text("理工维修日", style = MaterialTheme.typography.titleLargeEmphasized)
+                        Text(
+                            "协会志愿者提供免费的电脑检修与配置服务。",
+                            style = MaterialTheme.typography.bodyMedium
+                        )
+                        androidx.compose.material3.Button(onClick = onBook) {
+                            Icon(Icons.Default.CalendarMonth, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text("预约维修", style = MaterialTheme.typography.labelLargeEmphasized)
+                        }
                     }
                 }
             }
@@ -513,7 +525,7 @@ private fun OverviewTab(
                     }
                     Spacer(modifier = Modifier.width(10.dp))
                     Column(modifier = Modifier.weight(1f)) {
-                        Text("理工维修日", fontSize = 15.sp, fontWeight = FontWeight.Bold)
+                        Text("维修日安排", fontSize = 15.sp, fontWeight = FontWeight.Bold)
                         Text("协会线下定期定点义诊专场", fontSize = 11.sp, color = AppThemeColors.textSecondary)
                     }
                     OutlinedButton(
@@ -590,10 +602,12 @@ private fun ServicePill(
                 style = MaterialTheme.typography.titleSmall,
                 color = AppThemeColors.textPrimary
             )
-            Text(
+            BasicText(
                 text = subtitle,
-                style = MaterialTheme.typography.bodySmall,
-                color = AppThemeColors.textSecondary
+                style = MaterialTheme.typography.bodySmall.copy(color = AppThemeColors.textSecondary),
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                autoSize = TextAutoSize.StepBased(minFontSize = 9.5.sp, maxFontSize = 11.sp, stepSize = 0.5.sp)
             )
         }
     }
