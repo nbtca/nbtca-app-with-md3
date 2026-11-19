@@ -16,20 +16,28 @@ open class CardAuthorizationException(message: String) : Exception(message)
 class CardLoginRequired : CardAuthorizationException("Card 登录会话已失效，请重新授权")
 private class CardAccessDenied(message: String) : CardAuthorizationException(message)
 
+internal data class CardCacheSession(val key: String, val legacyKey: String = key) {
+    companion object {
+        fun fromCookies(cookies: String): CardCacheSession? {
+            val entries = cookies.split(';').map(String::trim).sorted()
+            val authorization = entries.singleOrNull { it.startsWith("CF_Authorization=") }
+                ?.takeIf { it.substringAfter('=').isNotBlank() } ?: return null
+            return CardCacheSession(hash(authorization), hash(entries.joinToString(";")))
+        }
+
+        private fun hash(value: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it) }
+    }
+}
+
 object CardClient {
     const val ORIGIN = "https://card.nbtca.space"
     private val http = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false)
         .callTimeout(20, TimeUnit.SECONDS).build()
 
-    suspend fun cacheSession(): String? {
-        val cookies = withContext(Dispatchers.Main) { CookieManager.getInstance().getCookie(ORIGIN) }
-        val entries = cookies.orEmpty().split(';').map(String::trim).sorted()
-        if (entries.none { it.startsWith("CF_Authorization=") && it.length > "CF_Authorization=".length }) {
-            return null
-        }
-        return MessageDigest.getInstance("SHA-256")
-            .digest(entries.joinToString(";").toByteArray(Charsets.UTF_8))
-            .joinToString("") { "%02x".format(it) }
+    internal suspend fun cacheSession(): CardCacheSession? = withContext(Dispatchers.Main) {
+        CookieManager.getInstance().getCookie(ORIGIN)?.let(CardCacheSession::fromCookies)
     }
 
     suspend fun page(path: String, fields: Map<String, String>? = null): Document {

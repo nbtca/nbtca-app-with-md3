@@ -1,7 +1,6 @@
 package space.nbtca.app.core.card
 
 import android.content.Context
-import android.webkit.CookieManager
 import coil.ImageLoader
 import coil.disk.DiskCache
 import coil.decode.SvgDecoder
@@ -9,7 +8,6 @@ import coil.memory.MemoryCache
 import coil.request.ImageRequest
 import okhttp3.OkHttpClient
 import java.io.File
-import java.security.MessageDigest
 
 object CardImages {
     @Volatile private var shared: ImageLoader? = null
@@ -24,8 +22,8 @@ object CardImages {
     fun request(context: Context, model: Any, cookie: String): ImageRequest {
         return ImageRequest.Builder(context).apply {
             if(model is String && model.startsWith("/media/members/")) {
-                val scope=MessageDigest.getInstance("SHA-256").digest(cookie.toByteArray()).joinToString("") { "%02x".format(it) }
-                val key="$scope:$model"
+                val session = CardCacheSession.fromCookies(cookie) ?: return@apply
+                val key = "${session.key}:$model"
                 data(CardClient.ORIGIN+model)
                 addHeader("Cookie",cookie)
                 memoryCacheKey(key)

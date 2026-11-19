@@ -19,9 +19,10 @@ internal data class CardPage(val document: Document, val usingCachedCopy: Boolea
 /** Compatibility adapter for the maintainer's existing website/HTTP contract. */
 internal class CardRepository(
     private val cache: DiskCache,
-    private val activeSession: suspend () -> String?,
+    private val activeSession: suspend () -> CardCacheSession?,
     private val requestPage: suspend (String, Map<String, String>?) -> Document,
-    private val now: () -> Long = System::currentTimeMillis
+    private val now: () -> Long = System::currentTimeMillis,
+    private val legacyCache: DiskCache? = null
 ) {
     private val mutex = Mutex()
     private var snapshot: PageSnapshot? = null
@@ -46,7 +47,7 @@ internal class CardRepository(
         val document = try {
             fetch(path)
         } catch (failure: IOException) {
-            if (cached != null && activeSession() == session) {
+            if (cached != null && activeSession()?.key == session) {
                 return@withSession CardPage(cached, usingCachedCopy = true)
             }
             throw failure
@@ -75,11 +76,19 @@ internal class CardRepository(
         requestPage(path, fields).also { validatePage(path, it) }
 
     private suspend fun <T> withSession(block: suspend (String?) -> T): T = mutex.withLock {
-        val session = activeSession()
+        val identity = activeSession()
+        val session = identity?.key
         if (snapshot == null) {
-            snapshot = withContext(Dispatchers.IO) {
-                cache.readStale(CACHE_KEY, PageSnapshot.serializer()) ?: PageSnapshot(null)
+            val (stored, fromLegacyDirectory) = withContext(Dispatchers.IO) {
+                val current = cache.readStale(CACHE_KEY, PageSnapshot.serializer())
+                if (current != null) current to false
+                else legacyCache?.readStale(CACHE_KEY, PageSnapshot.serializer()) to true
             }
+            val belongsToSession = identity != null && stored != null &&
+                (stored.session == session || stored.session == identity.legacyKey)
+            val restored = if (belongsToSession) checkNotNull(stored).copy(session = session)
+                else PageSnapshot(session)
+            if (fromLegacyDirectory || restored != stored) store(restored) else snapshot = restored
         }
         if (snapshot?.session != session) store(PageSnapshot(session))
         try {
@@ -91,7 +100,7 @@ internal class CardRepository(
     }
 
     private suspend fun rememberPage(session: String?, path: String, doc: Document) {
-        if (session == null || activeSession() != session) return
+        if (session == null || activeSession()?.key != session) return
         if (doc.selectFirst("[data-ticket], form.claim") != null) {
             invalidate { it == path }
             return
@@ -122,6 +131,7 @@ internal class CardRepository(
         withContext(Dispatchers.IO) {
             if (value.pages.isEmpty()) cache.remove(CACHE_KEY)
             else cache.write(CACHE_KEY, PageSnapshot.serializer(), value)
+            legacyCache?.remove(CACHE_KEY)
         }
     }
 
@@ -141,9 +151,10 @@ internal class CardRepository(
 
         fun getInstance(context: Context): CardRepository = instance ?: synchronized(this) {
             instance ?: CardRepository(
-                DiskCache(File(context.applicationContext.cacheDir, "card-pages")),
+                DiskCache(File(context.applicationContext.noBackupFilesDir, "card-pages")),
                 CardClient::cacheSession,
-                CardClient::page
+                CardClient::page,
+                legacyCache = DiskCache(File(context.applicationContext.cacheDir, "card-pages"))
             ).also { instance = it }
         }
 
