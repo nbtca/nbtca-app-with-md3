@@ -169,7 +169,7 @@ internal class CardRepository(
                 path == "/me" -> CardHome.parse(doc) != null
                 path.startsWith("/members/") -> doc.selectFirst(".card.full") != null
                 path == "/members" -> doc.selectFirst("main ul") != null
-                path == "/e" -> doc.selectFirst("main h1")?.text() == "活动"
+                path == "/e" -> CardEventPage.parse(doc) != null
                 path.startsWith("/e/") -> doc.selectFirst(".info h1") != null && doc.selectFirst(".pass-card") != null
                 else -> false
             }
