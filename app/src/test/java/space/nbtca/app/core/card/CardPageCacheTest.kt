@@ -145,6 +145,36 @@ class CardPageCacheTest {
         assertTrue(runCatching { repo.load("/e/fixture") }.exceptionOrNull() is IOException)
     }
 
+    @Test fun refreshesGuestWalletAfterClaimAndNeverReusesItAcrossAccounts() = runBlocking {
+        var claimed = false
+        response = { path, fields ->
+            if (path == "/me") {
+                val ticket = if (claimed) "<li><a class='pass-card thumb' href='/e/fixture'></a></li>" else ""
+                Jsoup.parse("""
+                    <header class='wrap guest'><h1>我的票夹</h1></header>
+                    <section class='wrap passes'>
+                      <section class='shelf'><header><h2>票夹</h2></header><ul>$ticket</ul></section>
+                    </section>
+                """.trimIndent())
+            } else {
+                if (fields != null) claimed = true
+                Jsoup.parse("<div class='info'><h1>活动</h1></div><div class='pass-card full' data-state='valid'></div>")
+            }
+        }
+        fun wallet(document: Document) = CardHome.parse(document) as CardHome.Guest
+        val repo = repository()
+        assertTrue(wallet(repo.load("/me").document).shelves.single().tickets.isEmpty())
+        repo.claim("/e/fixture", emptyMap())
+        assertEquals("/e/fixture", wallet(repo.load("/me").document).shelves.single().tickets.single().eventPath)
+        assertEquals(3, requests)
+        assertEquals("/e/fixture", wallet(repository().load("/me").document).shelves.single().tickets.single().eventPath)
+        assertEquals(3, requests)
+
+        session = "bob"
+        response = { _, _ -> throw IOException("offline") }
+        assertTrue(runCatching { repo.load("/me") }.exceptionOrNull() is IOException)
+    }
+
     private fun repository(
         cache: DiskCache = DiskCache(directory.root),
         identity: suspend () -> CardCacheSession? = { session?.let { CardCacheSession(it) } },
