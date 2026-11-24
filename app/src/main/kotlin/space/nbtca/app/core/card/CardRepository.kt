@@ -61,13 +61,14 @@ internal class CardRepository(
         withSession { session ->
             invalidate { it == "/me" || it == "/members" || it.startsWith("/members/") }
             val saved = fetch("/me", fields)
+            check(CardHome.parse(saved) is CardHome.Member) { "只有社员卡可以编辑" }
             check(saved.select(".notice").any { it.text().contains("已保存") }) { "服务端未确认保存，请刷新查看" }
             uploadMedia()
             fetch("/me").also { rememberPage(session, "/me", it) }
         }
 
     suspend fun claim(path: String, fields: Map<String, String>): Document = withSession {
-        invalidate { it == "/e" }
+        invalidate { it == "/e" || it == "/me" }
         fetch(path, fields).also { doc ->
             claimError(doc)?.let { throw IllegalStateException(it) }
         }
@@ -165,7 +166,8 @@ internal class CardRepository(
         private val labels = mapOf("name" to "姓名", "student_id" to "学号", "class_name" to "班级", "phone" to "手机号")
         fun validatePage(path: String, doc: Document) {
             val supported = when {
-                path == "/me" || path.startsWith("/members/") -> doc.selectFirst(".card.full") != null
+                path == "/me" -> CardHome.parse(doc) != null
+                path.startsWith("/members/") -> doc.selectFirst(".card.full") != null
                 path == "/members" -> doc.selectFirst("main ul") != null
                 path == "/e" -> doc.selectFirst("main h1")?.text() == "活动"
                 path.startsWith("/e/") -> doc.selectFirst(".info h1") != null && doc.selectFirst(".pass-card") != null

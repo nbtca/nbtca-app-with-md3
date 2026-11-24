@@ -22,6 +22,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jsoup.nodes.Document
 import space.nbtca.app.core.card.CardAuthorizationException
+import space.nbtca.app.core.card.CardHome
 import space.nbtca.app.core.card.CardRepository
 import space.nbtca.app.core.card.CardLoginRequired
 import space.nbtca.app.ui.components.ContentCard
@@ -31,6 +32,7 @@ import space.nbtca.app.ui.theme.AppThemeColors
 @Composable
 fun CardScreen() {
     var path by remember { mutableStateOf("/me") }
+    var eventBackPath by remember { mutableStateOf("/e") }
     var doc by remember { mutableStateOf<Document?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<Exception?>(null) }
@@ -50,6 +52,7 @@ fun CardScreen() {
     val scope = rememberCoroutineScope()
     fun navigate(next: String) {
         if (submitting) return
+        if (next.startsWith("/e/") && (path == "/me" || path == "/e")) eventBackPath = path
         path = next
         forceRefresh = false
         usingCachedCopy = false
@@ -104,7 +107,7 @@ fun CardScreen() {
     val detail = path.startsWith("/e/") || path.startsWith("/members/")
     val sections = listOf("/me" to "我的卡片", "/e" to "活动券", "/members" to "社员墙")
     val activeSection = sections.indexOfFirst { (route, _) -> path == route || path.startsWith("$route/") }
-    fun navigateUp() = navigate(if (path.startsWith("/members/")) "/members" else "/e")
+    fun navigateUp() = navigate(if (path.startsWith("/members/")) "/members" else eventBackPath)
     BackHandler(detail, onBack = ::navigateUp)
     fun post(fields: Map<String,String>) {
         if (submitting || loading) return
@@ -122,7 +125,8 @@ fun CardScreen() {
             finally { submitting = false }
         }
     }
-    if (editing && doc?.selectFirst(".card.full") != null) {
+    val home = remember(path, doc) { if (path == "/me") doc?.let { CardHome.parse(it) } else null }
+    if (editing && home is CardHome.Member) {
         CardEditScreen(doc!!, imageLoader, repository, onBack = { editing = false }, onSaved = {
             doc = it
             usingCachedCopy = false
@@ -237,6 +241,8 @@ fun CardScreen() {
                             if (row.size == 1) Spacer(Modifier.weight(1f))
                         }
                     }
+                } else if (path == "/me" && home is CardHome.Guest) {
+                    guestCardHome(home, ::navigate)
                 } else if (path == "/me" || path.startsWith("/members/")) {
                     current.selectFirst(".card.full")?.let { card -> item {
                         Column(Modifier.fillMaxWidth().padding(top = 20.dp, bottom = 16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
