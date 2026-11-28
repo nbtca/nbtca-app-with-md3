@@ -34,3 +34,9 @@ contract.json 固定已审阅的源码 commit/blob 哈希。Card upstream compat
 回归样例覆盖访客空/有票、社员和授权/结构失败、近期与往期（含只有往期及无活动）、同日日期/场地和详情链接、主办券与参与者入场码。未使用真实账号验证生产登录。
 
 MD3 additionally verifies guest wallet refresh after claiming and per-session cache separation.
+
+### 上游 a00dfe5 的兼容性审阅
+
+活动结束后，已入场票券的入场顺序与时间改由 `.act .issued .keepsake` 展示。Android 同时读取该节点和原有的 `.act .notice`，回归测试覆盖这两种页面。活动列表直接读取状态标签，可显示「今天 … 开场」和「进行中，… 结束」。详情页的地点链接、折叠日程、领券表单和登录链接仍匹配现有选择器。
+
+会员卡、活动券和社员列表的样式变更，以及基础布局的分享元数据和网页应用图标，均未改变客户端读取的节点。有效票券的入场二维码仍取自开放签到区域的 SVG。

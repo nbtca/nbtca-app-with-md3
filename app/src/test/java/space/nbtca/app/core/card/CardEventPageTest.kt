@@ -73,4 +73,15 @@ class CardEventPageTest {
         assertNotNull(CardRepository.checkInCode(card.attr("data-state", "valid")))
         assertNull(CardRepository.checkInCode(card.removeClass("full").addClass("thumb")))
     }
+
+    @Test fun redeemedTicketShowsKeepsakeWithoutNextEventOrAlbumText() {
+        val doc = Jsoup.parse("""
+            <div class="act"><div class="issued">
+              <div class="keepsake"><p>你是第 <b>3</b> 位入场的来宾</p><small>09:30 入场，票根已收进票夹。</small></div>
+              <a class="button">看活动相册</a><a class="next">下一场</a>
+            </div></div>
+        """.trimIndent())
+        assertEquals("你是第 3 位入场的来宾 09:30 入场，票根已收进票夹。", CardRepository.ticketNotice(doc))
+        assertEquals("已领取", CardRepository.ticketNotice(Jsoup.parse("<div class='act'><p class='notice'>已领取</p></div>")))
+    }
 }

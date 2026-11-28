@@ -1,26 +1,26 @@
 {
   "repository": "nbtca/card",
-  "baselineCommit": "7617672f9662cc2dab27f88ddc8b990df6cfe0cb",
+  "baselineCommit": "a00dfe52ff7cb50970c621cb4d4462d7d6a43ea3",
   "auth": "Cloudflare Access via Logto; CF_Authorization cookie",
   "files": {
-    "src/cards/MemberCard.astro": "957743370db6286c5ccc873d89aa59bf6bd3df9c",
+    "src/cards/MemberCard.astro": "2109fce19bbbbc29a725eba02a35846a5c1e58f0",
     "src/cards/pass.ts": "00a075ec489f5fa62f06ef89d42441debd9cb597",
-    "src/cards/passes/default.astro": "be0315eb863ac6f18dce22bea1242edb05d29983",
-    "src/components/EventList.astro": "5cb9308d4718bed7567533ff4f529345349f4760",
+    "src/cards/passes/default.astro": "1fe7ef693799aa0cd146a929565f5ca9ec0fdfdb",
+    "src/components/EventList.astro": "0c02af1c7712a32040f2575f940f7f3a7afd096a",
     "src/components/PassShelf.astro": "9c003b329e04e1f031044f4e6692713527259cf9",
-    "src/layouts/Base.astro": "2fbd923879c65e927f2ead7e426450ee32ae7741",
+    "src/layouts/Base.astro": "c4a5cae3ef38ab0a4c36d9a856bddedf840055a4",
     "src/lib/access.ts": "d9e43e790e8d82e51de1e0393e420446cb6088ff",
     "src/lib/attendee.ts": "d886c71e10725dd62629e6e6a4cca7cb2da443c6",
     "src/middleware.ts": "eb9481ce7b55e378257762a4625ebe01ecb3c390",
     "src/pages/api/me/media.ts": "97250da3f8d82e6968fd6b79d26ef1e985995811",
     "src/pages/api/pass.ts": "fd29fa02dff7e1da9370ebb6c149c763429202d7",
     "src/pages/api/redeem.ts": "5d81d585d018adcd698cd03b267dee7aab7c2131",
-    "src/pages/e/[slug]/index.astro": "51df8af75e837216693aacb11e3c7787868044d1",
+    "src/pages/e/[slug]/index.astro": "1e2aeefc6cf58bc48646aaf8314f1d0dc7d7c430",
     "src/pages/e/index.astro": "20542b0264aee2e00580b53bc059f78de3e9bd52",
     "src/pages/login.ts": "1ce917308625d250a1237f580c0a2233505e0850",
     "src/pages/me.astro": "55faf52721d1503850819ab872aafca1e973f967",
     "src/pages/media/[...key].ts": "971ea034582d5bdc3755d56c0650eb1dc97655b6",
     "src/pages/members/[id].astro": "4cef610ba31c30c77d8bbf1eafaad362d0fc5702",
-    "src/pages/members/index.astro": "21a0d515b9fec91f62c2d2107bae8ef1a20ce8af"
+    "src/pages/members/index.astro": "a464ef9ac34fe48223f3063aea2b93da91a1f46b"
   }
 }

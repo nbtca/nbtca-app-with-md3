@@ -186,6 +186,9 @@ internal class CardRepository(
             return card.selectFirst(".ticket[data-ticket][data-check-in=open] > .under > svg.qr")
         }
 
+        fun ticketNotice(doc: Document): String? =
+            doc.selectFirst(".act .notice, .act .issued .keepsake")?.text()
+
         fun ticketQrSvg(code: Element): ByteArray {
             val document = Document("")
             document.outputSettings().syntax(Document.OutputSettings.Syntax.xml).prettyPrint(false)
