@@ -186,6 +186,15 @@ internal class CardRepository(
             return card.selectFirst(".ticket[data-ticket][data-check-in=open] > .under > svg.qr")
         }
 
+        fun ticketQrSvg(code: Element): ByteArray {
+            val document = Document("")
+            document.outputSettings().syntax(Document.OutputSettings.Syntax.xml).prettyPrint(false)
+            val svg = code.clone().attr("xmlns", "http://www.w3.org/2000/svg")
+                .attr("width", "256").attr("height", "256")
+            document.appendChild(svg)
+            return svg.outerHtml().toByteArray(Charsets.UTF_8)
+        }
+
         fun claimFields(doc: Document): List<CardClaimField> = doc.select("form.claim input[name]").map { input ->
             val name = input.attr("name")
             val hidden = input.attr("type") == "hidden"

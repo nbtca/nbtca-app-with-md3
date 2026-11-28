@@ -107,8 +107,8 @@ internal fun TicketVisual(element: Element?, modifier: Modifier=Modifier, previe
                         }
                     }
                     code!=null && reveal -> Row(verticalAlignment=Alignment.CenterVertically) {
-                        val svg=code.clone().attr("xmlns","http://www.w3.org/2000/svg").attr("width","256").attr("height","256")
-                        coil.compose.AsyncImage(svg.outerHtml().toByteArray(),"入场二维码",modifier=Modifier.size((w*.29f).dp).background(Color.White).padding(8.dp))
+                        val svg = remember(code) { CardRepository.ticketQrSvg(code) }
+                        coil.compose.AsyncImage(svg,"入场二维码",modifier=Modifier.size((w*.29f).dp).background(Color.White).padding(8.dp))
                         Text(code.parent()?.selectFirst(".serial span")?.text().orEmpty(),fontSize=(w*.03f).sp,color=Color(0xFF17232B),modifier=Modifier.padding(start=12.dp))
                     }
                     else -> Box(Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).background(Brush.linearGradient(listOf(Color(0xFFE2F4F6),Color(0xFFF0E5F8))))
