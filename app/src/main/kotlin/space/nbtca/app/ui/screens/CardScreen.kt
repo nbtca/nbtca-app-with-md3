@@ -268,7 +268,7 @@ fun CardScreen() {
                     item { ContentCard {
                         Text("我的活动券", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                         Text(current.selectFirst(".who .name")?.text().orEmpty())
-                        Text(current.selectFirst(".act .notice")?.text().orEmpty(), modifier = Modifier.padding(vertical = 8.dp))
+                        CardRepository.ticketNotice(current)?.let { Text(it, modifier = Modifier.padding(vertical = 8.dp)) }
                         if (current.selectFirst("form.claim") != null) {
                             val parsed = remember(current) { runCatching { CardRepository.claimFields(current) } }
                             val claimFields = parsed.getOrNull().orEmpty()

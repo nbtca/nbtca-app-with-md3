@@ -62,4 +62,15 @@ class CardRepositoryTest {
         }
         assertNull(CardRepository.checkInCode(card.attr("data-state", "valid").removeClass("full").addClass("thumb")))
     }
+
+    @Test fun scopedTicketQrIsValidStandaloneSvg() {
+        val path = "M4 4h7v7H4z"
+        val code = Jsoup.parse("""<svg class="qr" viewBox="0 0 37 37" data-astro-cid-test><path d="$path" data-astro-cid-test /></svg>""")
+            .expectFirst("svg")
+        val parser = javax.xml.parsers.DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }
+        val svg = parser.newDocumentBuilder().parse(CardRepository.ticketQrSvg(code).inputStream()).documentElement
+        assertEquals("http://www.w3.org/2000/svg", svg.namespaceURI)
+        assertEquals("0 0 37 37", svg.getAttribute("viewBox"))
+        assertEquals(path, svg.getElementsByTagNameNS(svg.namespaceURI, "path").item(0).attributes.getNamedItem("d").nodeValue)
+    }
 }
